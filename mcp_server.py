@@ -749,11 +749,35 @@ def run_server():
         ),
         # FX
         Tool(
+            name="list_installed_fx",
+            description=(
+                "List FX plugins installed on the system. Use this when the user asks to "
+                "add an effect but doesn't specify which plugin — call this to see what's "
+                "available and either pick the best match or ask the user to choose. "
+                "Supports filtering by name and by category (eq, compressor, reverb, delay, "
+                "distortion, limiter, gate, chorus)."
+            ),
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "filter": {
+                        "type": "string",
+                        "description": "Search string to filter plugin names (e.g., 'SSL', 'Fab')",
+                    },
+                    "category": {
+                        "type": "string",
+                        "description": "Filter by type: eq, compressor, reverb, delay, distortion, limiter, gate, chorus",
+                        "enum": ["eq", "compressor", "reverb", "delay", "distortion", "limiter", "gate", "chorus"],
+                    },
+                },
+            },
+        ),
+        Tool(
             name="add_fx",
             description=(
                 "Add an FX plugin to a track. Uses REAPER's FX browser search, so partial "
-                "names work (e.g., 'ReaEQ', 'ReaComp', 'ReaDelay'). For third-party plugins, "
-                "use the name as shown in REAPER's FX browser."
+                "names work (e.g., 'ReaEQ', 'ReaComp', 'ReaDelay'). If the user doesn't "
+                "specify a plugin, call list_installed_fx first to see what's available."
             ),
             inputSchema={
                 "type": "object",

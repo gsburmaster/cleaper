@@ -557,6 +557,47 @@ function handlers.unarm_track(params)
 end
 
 -- FX / Plugins
+function handlers.list_installed_fx(params)
+  local filter = params.filter and params.filter:lower() or nil
+  local category = params.category and params.category:lower() or nil
+  local results = {}
+  local idx = 0
+  while true do
+    local ok, name = reaper.EnumInstalledFX(idx)
+    if not ok then break end
+    local include = true
+    if filter and not name:lower():find(filter, 1, true) then
+      include = false
+    end
+    if category then
+      local name_lower = name:lower()
+      if category == "eq" then
+        include = include and (name_lower:find("eq") or name_lower:find("equaliz"))
+      elseif category == "compressor" then
+        include = include and (name_lower:find("comp") or name_lower:find("compress"))
+      elseif category == "reverb" then
+        include = include and (name_lower:find("reverb") or name_lower:find("verb") or name_lower:find("room") or name_lower:find("hall"))
+      elseif category == "delay" then
+        include = include and (name_lower:find("delay") or name_lower:find("echo"))
+      elseif category == "distortion" then
+        include = include and (name_lower:find("dist") or name_lower:find("satur") or name_lower:find("overdrive") or name_lower:find("drive"))
+      elseif category == "limiter" then
+        include = include and (name_lower:find("limit"))
+      elseif category == "gate" then
+        include = include and (name_lower:find("gate") or name_lower:find("expander"))
+      elseif category == "chorus" then
+        include = include and (name_lower:find("chorus") or name_lower:find("flang") or name_lower:find("phas"))
+      end
+    end
+    if include then
+      results[#results+1] = name
+    end
+    idx = idx + 1
+    if #results >= 200 then break end -- cap results
+  end
+  return {plugins = results, count = #results, total_scanned = idx}
+end
+
 function handlers.add_fx(params)
   local track, err = resolve_track(params.track)
   if not track then return nil, err end
@@ -830,6 +871,7 @@ local READONLY_ACTIONS = {
   get_session_state = true,
   get_fx_params = true,
   get_transport_state = true,
+  list_installed_fx = true,
   ping = true,
 }
 
