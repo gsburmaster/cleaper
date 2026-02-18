@@ -541,10 +541,18 @@ def run_server():
                             "- Pan is -100 (full left) to 100 (full right)\n"
                             "- FX parameters: call get_fx_params first to see parameter names and ranges\n"
                             "- Everything you do is wrapped in undo blocks — the user can Ctrl+Z any action\n\n"
+                            "METERING:\n"
+                            "- Use get_track_meter / get_master_meter to check levels (playback must be running)\n"
+                            "- Check for clipping before and after making changes\n\n"
                             "TIPS:\n"
                             "- For EQ: add ReaEQ, then use get_fx_params to find band parameters\n"
                             "- For compression: add ReaComp, check params for threshold/ratio/attack/release\n"
                             "- For sends/buses: create_track for the bus, then create_send from source tracks\n"
+                            "- Don't know which plugin? Call list_installed_fx with a category filter\n"
+                            "- For automation: add_envelope_points with 'Volume', 'Pan', or 'FXName:ParamName'\n"
+                            "- For organization: create_folder to group tracks (e.g., all drums)\n"
+                            "- For rendering: render_project uses REAPER's last format settings\n"
+                            "- toggle_phase for multi-mic phase issues (kick, snare, DI/amp)\n"
                             "- You can chain multiple operations in sequence\n"
                             "- If a track name is ambiguous, the error will list the matches — ask the user to clarify"
                         ),
@@ -1015,6 +1023,288 @@ def run_server():
             name="redo",
             description="Redo the last undone action in REAPER (Ctrl+Shift+Z).",
             inputSchema={"type": "object", "properties": {}},
+        ),
+        # -- Metering / Analysis --
+        Tool(
+            name="get_track_meter",
+            description=(
+                "Read the current peak level of a track in dB. Use this to check levels, "
+                "detect clipping, or compare loudness between tracks. Returns left/right "
+                "peak values and a clipping flag. Playback must be running for live readings."
+            ),
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "track": {"type": "string", "description": "Track name (partial match OK)"},
+                },
+                "required": ["track"],
+            },
+        ),
+        Tool(
+            name="get_master_meter",
+            description=(
+                "Read the current peak level of the master bus in dB. Use to check if the "
+                "mix is clipping or to gauge overall loudness. Playback must be running."
+            ),
+            inputSchema={"type": "object", "properties": {}},
+        ),
+        # -- Render / Bounce --
+        Tool(
+            name="render_project",
+            description=(
+                "Render/bounce the project to an audio file. Uses REAPER's most recent "
+                "render format settings (WAV, MP3, etc. — whatever the user last configured). "
+                "You can set the output directory, filename, bounds, and sample rate."
+            ),
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "directory": {
+                        "type": "string",
+                        "description": "Output directory path. Omit to use REAPER's current setting.",
+                    },
+                    "filename": {
+                        "type": "string",
+                        "description": "Filename pattern (e.g., 'mix_v2'). Omit for default.",
+                    },
+                    "bounds": {
+                        "type": "string",
+                        "description": "What to render: 'project' (entire), 'time_selection', or 'custom'",
+                        "enum": ["project", "time_selection", "custom"],
+                    },
+                    "start_time": {
+                        "type": "number",
+                        "description": "Start time in seconds (only with bounds='custom')",
+                    },
+                    "end_time": {
+                        "type": "number",
+                        "description": "End time in seconds (only with bounds='custom')",
+                    },
+                    "sample_rate": {
+                        "type": "integer",
+                        "description": "Sample rate in Hz (e.g., 44100, 48000, 96000)",
+                    },
+                    "channels": {
+                        "type": "integer",
+                        "description": "Number of channels (1=mono, 2=stereo)",
+                    },
+                },
+            },
+        ),
+        # -- Automation / Envelopes --
+        Tool(
+            name="add_envelope_points",
+            description=(
+                "Add automation points to a track envelope. Envelope can be 'Volume', "
+                "'Pan', 'Mute', or an FX parameter as 'FXName:ParamName' (e.g., "
+                "'ReaEQ:Frequency'). Volume values are in dB, pan in -100..100. "
+                "Shapes: 0=linear, 1=square, 2=S-curve, 3=fast start, 4=fast end, 5=bezier."
+            ),
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "track": {"type": "string", "description": "Track name (partial match OK)"},
+                    "envelope": {
+                        "type": "string",
+                        "description": "Envelope name: 'Volume', 'Pan', 'Mute', or 'FXName:ParamName'",
+                    },
+                    "points": {
+                        "type": "array",
+                        "description": "Automation points to add",
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "time": {"type": "number", "description": "Position in seconds"},
+                                "value": {
+                                    "type": "number",
+                                    "description": "Value (dB for Volume, -100..100 for Pan, raw for FX params)",
+                                },
+                                "shape": {
+                                    "type": "integer",
+                                    "description": "Curve shape (0=linear, 1=square, 2=S-curve, default 0)",
+                                },
+                            },
+                            "required": ["time", "value"],
+                        },
+                    },
+                },
+                "required": ["track", "envelope", "points"],
+            },
+        ),
+        Tool(
+            name="get_envelope_points",
+            description=(
+                "Read existing automation points from a track envelope. Returns time, "
+                "value, and shape for each point. Use to understand existing automation "
+                "before adding or modifying points."
+            ),
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "track": {"type": "string", "description": "Track name (partial match OK)"},
+                    "envelope": {
+                        "type": "string",
+                        "description": "Envelope name: 'Volume', 'Pan', 'Mute', or 'FXName:ParamName'",
+                    },
+                    "start_time": {"type": "number", "description": "Filter: start time in seconds"},
+                    "end_time": {"type": "number", "description": "Filter: end time in seconds"},
+                },
+                "required": ["track", "envelope"],
+            },
+        ),
+        Tool(
+            name="clear_envelope",
+            description=(
+                "Clear automation points from a track envelope. Optionally specify a time "
+                "range to clear only points within that range."
+            ),
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "track": {"type": "string", "description": "Track name (partial match OK)"},
+                    "envelope": {
+                        "type": "string",
+                        "description": "Envelope name: 'Volume', 'Pan', 'Mute', or 'FXName:ParamName'",
+                    },
+                    "start_time": {"type": "number", "description": "Start of range to clear (seconds)"},
+                    "end_time": {"type": "number", "description": "End of range to clear (seconds)"},
+                },
+                "required": ["track", "envelope"],
+            },
+        ),
+        # -- Track Folders / Grouping --
+        Tool(
+            name="create_folder",
+            description=(
+                "Create a folder track and move specified child tracks into it. "
+                "Use for organizing tracks into groups (e.g., all drums under a 'Drums' folder)."
+            ),
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "name": {"type": "string", "description": "Folder track name"},
+                    "children": {
+                        "type": "array",
+                        "description": "Track names to put inside the folder",
+                        "items": {"type": "string"},
+                    },
+                },
+                "required": ["name", "children"],
+            },
+        ),
+        # -- Item Gain & Fades --
+        Tool(
+            name="set_item_gain",
+            description="Set the gain (volume) of a media item in dB.",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "track": {"type": "string", "description": "Track name (partial match OK)"},
+                    "item_index": {"type": "integer", "description": "Item index on the track (default 0)"},
+                    "gain_db": {"type": "number", "description": "Gain in dB (0 = unity)"},
+                },
+                "required": ["track", "gain_db"],
+            },
+        ),
+        Tool(
+            name="set_item_fade_in",
+            description=(
+                "Set the fade-in on a media item. Shapes: 0=linear, 1=exponential, "
+                "2=S-curve, 3=exponential (alt), 4=fast start, 5=fast end, 6=bezier."
+            ),
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "track": {"type": "string", "description": "Track name (partial match OK)"},
+                    "item_index": {"type": "integer", "description": "Item index on the track (default 0)"},
+                    "length": {"type": "number", "description": "Fade-in length in seconds"},
+                    "shape": {"type": "integer", "description": "Fade shape (0-6, default 0=linear)"},
+                },
+                "required": ["track", "length"],
+            },
+        ),
+        Tool(
+            name="set_item_fade_out",
+            description=(
+                "Set the fade-out on a media item. Shapes: 0=linear, 1=exponential, "
+                "2=S-curve, 3=exponential (alt), 4=fast start, 5=fast end, 6=bezier."
+            ),
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "track": {"type": "string", "description": "Track name (partial match OK)"},
+                    "item_index": {"type": "integer", "description": "Item index on the track (default 0)"},
+                    "length": {"type": "number", "description": "Fade-out length in seconds"},
+                    "shape": {"type": "integer", "description": "Fade shape (0-6, default 0=linear)"},
+                },
+                "required": ["track", "length"],
+            },
+        ),
+        # -- Cursor & Time Selection --
+        Tool(
+            name="set_cursor_position",
+            description="Move the edit cursor to a position in seconds.",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "time": {"type": "number", "description": "Position in seconds from project start"},
+                },
+                "required": ["time"],
+            },
+        ),
+        Tool(
+            name="set_time_selection",
+            description="Set the time selection (highlighted region) in REAPER.",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "start_time": {"type": "number", "description": "Selection start in seconds"},
+                    "end_time": {"type": "number", "description": "Selection end in seconds"},
+                },
+                "required": ["start_time", "end_time"],
+            },
+        ),
+        Tool(
+            name="set_loop_points",
+            description="Set the loop region and optionally enable/disable looping.",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "start_time": {"type": "number", "description": "Loop start in seconds"},
+                    "end_time": {"type": "number", "description": "Loop end in seconds"},
+                    "enable": {"type": "boolean", "description": "Enable (true) or disable (false) repeat/loop"},
+                },
+                "required": ["start_time", "end_time"],
+            },
+        ),
+        Tool(
+            name="go_to_marker",
+            description="Jump the edit cursor to a marker or region by name or index number.",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "marker": {
+                        "type": "string",
+                        "description": "Marker name (partial match) or index number",
+                    },
+                },
+                "required": ["marker"],
+            },
+        ),
+        # -- Phase --
+        Tool(
+            name="toggle_phase",
+            description=(
+                "Flip the polarity (phase) of a track. Essential for multi-mic setups "
+                "(kick in/out, snare top/bottom, DI vs amp)."
+            ),
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "track": {"type": "string", "description": "Track name (partial match OK)"},
+                },
+                "required": ["track"],
+            },
         ),
     ]
 

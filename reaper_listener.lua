@@ -857,6 +857,396 @@ function handlers.redo()
   return {action = "redo"}
 end
 
+-- ============================================================================
+-- Metering / Analysis
+-- ============================================================================
+
+function handlers.get_track_meter(params)
+  local track, err = resolve_track(params.track)
+  if not track then return nil, err end
+  -- Peak values per channel (0-indexed)
+  local peak_l = reaper.Track_GetPeakInfo(track, 0)
+  local peak_r = reaper.Track_GetPeakInfo(track, 1)
+  local function to_db(v) if v < 0.00001 then return -150 end; return 20 * math.log(v, 10) end
+  return {
+    track = params.track,
+    peak_l_db = math.floor(to_db(peak_l) * 10) / 10,
+    peak_r_db = math.floor(to_db(peak_r) * 10) / 10,
+    peak_l_raw = peak_l,
+    peak_r_raw = peak_r,
+    clipping = peak_l >= 1.0 or peak_r >= 1.0,
+  }
+end
+
+function handlers.get_master_meter(params)
+  local master = reaper.GetMasterTrack(0)
+  local peak_l = reaper.Track_GetPeakInfo(master, 0)
+  local peak_r = reaper.Track_GetPeakInfo(master, 1)
+  local function to_db(v) if v < 0.00001 then return -150 end; return 20 * math.log(v, 10) end
+  return {
+    peak_l_db = math.floor(to_db(peak_l) * 10) / 10,
+    peak_r_db = math.floor(to_db(peak_r) * 10) / 10,
+    clipping = peak_l >= 1.0 or peak_r >= 1.0,
+  }
+end
+
+-- ============================================================================
+-- Render / Bounce
+-- ============================================================================
+
+function handlers.render_project(params)
+  -- Set output directory if provided
+  if params.directory then
+    reaper.GetSetProjectInfo_String(0, "RENDER_FILE", params.directory, true)
+  end
+  -- Set filename pattern if provided
+  if params.filename then
+    reaper.GetSetProjectInfo_String(0, "RENDER_PATTERN", params.filename, true)
+  end
+  -- Set bounds: 0=entire project, 1=time selection, 2=entire+markers
+  if params.bounds then
+    local bounds_map = {project = 0, time_selection = 1, custom = 2}
+    local b = bounds_map[params.bounds] or 0
+    reaper.GetSetProjectInfo(0, "RENDER_BOUNDSFLAG", b, true)
+    if params.bounds == "custom" and params.start_time and params.end_time then
+      reaper.GetSetProjectInfo(0, "RENDER_STARTPOS", params.start_time, true)
+      reaper.GetSetProjectInfo(0, "RENDER_ENDPOS", params.end_time, true)
+    end
+  end
+  -- Set sample rate if provided
+  if params.sample_rate then
+    reaper.GetSetProjectInfo(0, "RENDER_SRATE", params.sample_rate, true)
+  end
+  -- Set channels if provided (1=mono, 2=stereo)
+  if params.channels then
+    reaper.GetSetProjectInfo(0, "RENDER_CHANNELS", params.channels, true)
+  end
+  -- Trigger render with most recent format settings, auto-close dialog
+  reaper.Main_OnCommand(41824, 0)
+  -- Read back what was rendered
+  local _, render_file = reaper.GetSetProjectInfo_String(0, "RENDER_FILE", "", false)
+  local _, render_pattern = reaper.GetSetProjectInfo_String(0, "RENDER_PATTERN", "", false)
+  return {
+    rendered = true,
+    directory = render_file,
+    filename_pattern = render_pattern,
+  }
+end
+
+-- ============================================================================
+-- Automation / Envelopes
+-- ============================================================================
+
+-- Helper: resolve an envelope on a track by name
+local function resolve_envelope(track, env_name)
+  if not env_name or env_name == "" then return nil, "No envelope name provided" end
+  local env_lower = env_name:lower()
+
+  -- Built-in envelopes
+  local builtin = {volume = "Volume", pan = "Pan", mute = "Mute", width = "Width"}
+  if builtin[env_lower] then
+    local env = reaper.GetTrackEnvelopeByName(track, builtin[env_lower])
+    if env then return env, nil, builtin[env_lower] end
+    return nil, "Envelope '" .. builtin[env_lower] .. "' not found (may need to show it first)"
+  end
+
+  -- FX parameter envelope: "FXName:ParamName"
+  local fx_part, param_part = env_name:match("^(.+):(.+)$")
+  if fx_part and param_part then
+    local fx_idx, fx_err = resolve_fx(track, fx_part)
+    if not fx_idx then return nil, fx_err end
+    -- Find param
+    local param_lower = param_part:lower()
+    local count = reaper.TrackFX_GetNumParams(track, fx_idx)
+    for p = 0, count - 1 do
+      local _, pname = reaper.TrackFX_GetParamName(track, fx_idx, p)
+      if pname:lower() == param_lower or pname:lower():find(param_lower, 1, true) then
+        local env = reaper.GetFXEnvelope(track, fx_idx, p, true) -- true = create if needed
+        if env then return env, nil, fx_part .. ":" .. pname end
+        return nil, "Could not create envelope for " .. pname
+      end
+    end
+    return nil, "No parameter matching '" .. param_part .. "' on FX '" .. fx_part .. "'"
+  end
+
+  -- Try as-is
+  local env = reaper.GetTrackEnvelopeByName(track, env_name)
+  if env then return env, nil, env_name end
+  return nil, "Envelope '" .. env_name .. "' not found"
+end
+
+function handlers.add_envelope_points(params)
+  local track, err = resolve_track(params.track)
+  if not track then return nil, err end
+  local env, env_err, env_label = resolve_envelope(track, params.envelope)
+  if not env then return nil, env_err end
+
+  local points = params.points or {}
+  if #points > 10000 then return nil, "Too many points (max 10000)" end
+  local count = 0
+  for _, pt in ipairs(points) do
+    local t = tonumber(pt.time)
+    local v = tonumber(pt.value)
+    if not t or not v then goto continue end
+    -- Convert dB to volume scale for volume envelope
+    if env_label == "Volume" then
+      v = db_to_vol(v)
+    elseif env_label == "Pan" then
+      v = pan_to_reaper(v)
+    end
+    local shape = tonumber(pt.shape) or 0 -- 0=linear
+    reaper.InsertEnvelopePoint(env, t, v, shape, 0, false, true)
+    count = count + 1
+    ::continue::
+  end
+  reaper.Envelope_SortPoints(env)
+  return {track = params.track, envelope = env_label, points_added = count}
+end
+
+function handlers.get_envelope_points(params)
+  local track, err = resolve_track(params.track)
+  if not track then return nil, err end
+  local env, env_err, env_label = resolve_envelope(track, params.envelope)
+  if not env then return nil, env_err end
+
+  local start_time = tonumber(params.start_time) or 0
+  local end_time = tonumber(params.end_time) or math.huge
+
+  local point_count = reaper.CountEnvelopePoints(env)
+  local points = {}
+  for i = 0, point_count - 1 do
+    local _, time, value, shape, tension, selected = reaper.GetEnvelopePoint(env, i)
+    if time >= start_time and time <= end_time then
+      local display_value = value
+      if env_label == "Volume" then display_value = vol_to_db(value) end
+      if env_label == "Pan" then display_value = reaper_to_pan(value) end
+      points[#points+1] = {
+        index = i, time = time, value = display_value,
+        raw_value = value, shape = shape
+      }
+    end
+    if #points >= 500 then break end -- cap output
+  end
+  return {track = params.track, envelope = env_label, points = points, total = point_count}
+end
+
+function handlers.clear_envelope(params)
+  local track, err = resolve_track(params.track)
+  if not track then return nil, err end
+  local env, env_err, env_label = resolve_envelope(track, params.envelope)
+  if not env then return nil, env_err end
+
+  local start_time = tonumber(params.start_time)
+  local end_time = tonumber(params.end_time)
+
+  if start_time and end_time then
+    reaper.DeleteEnvelopePointRange(env, start_time, end_time)
+  else
+    -- Clear all points
+    local count = reaper.CountEnvelopePoints(env)
+    for i = count - 1, 0, -1 do
+      reaper.DeleteEnvelopePoint(env, i)
+    end
+  end
+  return {track = params.track, envelope = env_label, cleared = true}
+end
+
+-- ============================================================================
+-- Track Folders / Grouping
+-- ============================================================================
+
+function handlers.create_folder(params)
+  local name = params.name or "Folder"
+  local children = params.children or {}
+
+  -- Resolve all child tracks first
+  local child_tracks = {}
+  for _, child_name in ipairs(children) do
+    local ct, cerr = resolve_track(child_name)
+    if not ct then return nil, "Child track: " .. cerr end
+    child_tracks[#child_tracks+1] = {track = ct, name = child_name}
+  end
+
+  -- Find the position: insert before the first child, or at end
+  local insert_idx = reaper.CountTracks(0)
+  if #child_tracks > 0 then
+    local first_child_idx = math.huge
+    for _, c in ipairs(child_tracks) do
+      local idx = reaper.GetMediaTrackInfo_Value(c.track, "IP_TRACKNUMBER") - 1
+      if idx < first_child_idx then first_child_idx = idx end
+    end
+    insert_idx = first_child_idx
+  end
+
+  -- Create the folder track
+  reaper.InsertTrackAtIndex(insert_idx, true)
+  local folder_track = reaper.GetTrack(0, insert_idx)
+  reaper.GetSetMediaTrackInfo_String(folder_track, "P_NAME", name, true)
+  reaper.SetMediaTrackInfo_Value(folder_track, "I_FOLDERDEPTH", 1) -- make it a folder parent
+
+  -- Move children right after the folder track (they may have shifted by 1)
+  -- Re-resolve since indices changed
+  local placed = 0
+  for _, child_name_entry in ipairs(children) do
+    local ct, cerr = resolve_track(child_name_entry)
+    if ct then
+      local cur_idx = math.floor(reaper.GetMediaTrackInfo_Value(ct, "IP_TRACKNUMBER") - 1)
+      local target_idx = insert_idx + 1 + placed
+      if cur_idx ~= target_idx then
+        reaper.ReorderSelectedTracks(target_idx, 0)
+        -- Use SetOnlyTrackSelected + ReorderSelectedTracks
+        reaper.SetOnlyTrackSelected(ct)
+        reaper.ReorderSelectedTracks(target_idx, 0)
+      end
+      -- Set folder depth to 0 (normal child)
+      reaper.SetMediaTrackInfo_Value(ct, "I_FOLDERDEPTH", 0)
+      placed = placed + 1
+    end
+  end
+
+  -- Close the folder: set the last child's depth to -1
+  if #children > 0 then
+    local last_child, _ = resolve_track(children[#children])
+    if last_child then
+      reaper.SetMediaTrackInfo_Value(last_child, "I_FOLDERDEPTH", -1)
+    end
+  end
+
+  reaper.TrackList_AdjustWindows(false)
+  return {folder = name, children_count = #children, index = insert_idx}
+end
+
+-- ============================================================================
+-- Item Gain & Fades
+-- ============================================================================
+
+function handlers.set_item_gain(params)
+  local track, err = resolve_track(params.track)
+  if not track then return nil, err end
+  local item = reaper.GetTrackMediaItem(track, params.item_index or 0)
+  if not item then return nil, "Item not found" end
+  local db = tonumber(params.gain_db)
+  if not db then return nil, "Invalid gain_db value" end
+  reaper.SetMediaItemInfo_Value(item, "D_VOL", db_to_vol(db))
+  return {track = params.track, item_index = params.item_index, gain_db = db}
+end
+
+function handlers.set_item_fade_in(params)
+  local track, err = resolve_track(params.track)
+  if not track then return nil, err end
+  local item = reaper.GetTrackMediaItem(track, params.item_index or 0)
+  if not item then return nil, "Item not found" end
+  local length = tonumber(params.length)
+  if not length or length < 0 then return nil, "Invalid fade length" end
+  reaper.SetMediaItemInfo_Value(item, "D_FADEINLEN", length)
+  if params.shape then
+    local shape = math.max(0, math.min(6, math.floor(tonumber(params.shape) or 0)))
+    reaper.SetMediaItemInfo_Value(item, "C_FADEINSHAPE", shape)
+  end
+  reaper.UpdateArrange()
+  return {track = params.track, item_index = params.item_index, fade_in = length}
+end
+
+function handlers.set_item_fade_out(params)
+  local track, err = resolve_track(params.track)
+  if not track then return nil, err end
+  local item = reaper.GetTrackMediaItem(track, params.item_index or 0)
+  if not item then return nil, "Item not found" end
+  local length = tonumber(params.length)
+  if not length or length < 0 then return nil, "Invalid fade length" end
+  reaper.SetMediaItemInfo_Value(item, "D_FADEOUTLEN", length)
+  if params.shape then
+    local shape = math.max(0, math.min(6, math.floor(tonumber(params.shape) or 0)))
+    reaper.SetMediaItemInfo_Value(item, "C_FADEOUTSHAPE", shape)
+  end
+  reaper.UpdateArrange()
+  return {track = params.track, item_index = params.item_index, fade_out = length}
+end
+
+-- ============================================================================
+-- Cursor & Time Selection
+-- ============================================================================
+
+function handlers.set_cursor_position(params)
+  local time = tonumber(params.time)
+  if not time then return nil, "Invalid time value" end
+  reaper.SetEditCurPos(time, true, false)
+  return {cursor_position = time}
+end
+
+function handlers.set_time_selection(params)
+  local s = tonumber(params.start_time)
+  local e = tonumber(params.end_time)
+  if not s or not e then return nil, "Invalid start/end time" end
+  reaper.GetSet_LoopTimeRange(true, false, s, e, false)
+  return {start_time = s, end_time = e}
+end
+
+function handlers.set_loop_points(params)
+  local s = tonumber(params.start_time)
+  local e = tonumber(params.end_time)
+  if not s or not e then return nil, "Invalid start/end time" end
+  reaper.GetSet_LoopTimeRange(true, true, s, e, false)
+  -- Enable/disable repeat
+  if params.enable ~= nil then
+    local repeat_state = reaper.GetSetRepeat(-1)
+    if params.enable and repeat_state == 0 then
+      reaper.GetSetRepeat(1)
+    elseif not params.enable and repeat_state == 1 then
+      reaper.GetSetRepeat(0)
+    end
+  end
+  return {start_time = s, end_time = e, loop_enabled = reaper.GetSetRepeat(-1) == 1}
+end
+
+function handlers.go_to_marker(params)
+  -- Accept name (string) or index (number)
+  local target = params.marker
+  if not target then return nil, "No marker specified" end
+
+  local _, num_markers, num_regions = reaper.CountProjectMarkers(0)
+  local total = num_markers + num_regions
+
+  -- Try as number first
+  local target_num = tonumber(target)
+  if target_num then
+    reaper.GoToMarker(0, math.floor(target_num), false)
+    return {marker = target_num}
+  end
+
+  -- Search by name
+  local target_lower = target:lower()
+  for i = 0, total - 1 do
+    local _, is_region, pos, _, name, idx = reaper.EnumProjectMarkers(i)
+    if not is_region and name:lower():find(target_lower, 1, true) then
+      reaper.SetEditCurPos(pos, true, false)
+      return {marker = name, position = pos}
+    end
+  end
+  -- Also check regions
+  for i = 0, total - 1 do
+    local _, is_region, pos, _, name, idx = reaper.EnumProjectMarkers(i)
+    if is_region and name:lower():find(target_lower, 1, true) then
+      reaper.SetEditCurPos(pos, true, false)
+      return {region = name, position = pos}
+    end
+  end
+  return nil, "No marker or region matching '" .. target .. "'"
+end
+
+-- ============================================================================
+-- Phase
+-- ============================================================================
+
+function handlers.toggle_phase(params)
+  local track, err = resolve_track(params.track)
+  if not track then return nil, err end
+  local current = reaper.GetMediaTrackInfo_Value(track, "B_PHASE")
+  local new_phase = current == 0 and 1 or 0
+  reaper.SetMediaTrackInfo_Value(track, "B_PHASE", new_phase)
+  return {track = params.track, phase_inverted = new_phase == 1}
+end
+
 -- Build the allowed actions set from the handlers table
 for action_name, _ in pairs(handlers) do
   ALLOWED_ACTIONS[action_name] = true
@@ -871,6 +1261,9 @@ local READONLY_ACTIONS = {
   get_session_state = true,
   get_fx_params = true,
   get_transport_state = true,
+  get_track_meter = true,
+  get_master_meter = true,
+  get_envelope_points = true,
   list_installed_fx = true,
   ping = true,
 }
