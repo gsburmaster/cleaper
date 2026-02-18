@@ -1,4 +1,4 @@
-# REAPER MCP Server
+# Cleaper
 
 Control [REAPER](https://www.reaper.fm/) through natural language with Claude.
 
@@ -11,8 +11,8 @@ Works with [Claude Code](https://docs.anthropic.com/en/docs/claude-code) and [Cl
 ## Quick Start
 
 ```bash
-git clone https://github.com/username/reaper-mcp.git
-cd reaper-mcp
+git clone https://github.com/gsburmaster/cleaper.git
+cd cleaper
 ./install.sh
 ```
 
