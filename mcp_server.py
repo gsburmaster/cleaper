@@ -19,6 +19,7 @@ import shutil
 import stat
 import sys
 import tempfile
+import threading
 import time
 import uuid
 from pathlib import Path
@@ -97,6 +98,10 @@ def get_claude_desktop_config_path() -> Path:
 # IPC helpers
 # ---------------------------------------------------------------------------
 
+# Serialize all commands — prevents concurrent tool calls from clobbering
+# each other's command.json / response.json files.
+_ipc_lock = threading.Lock()
+
 def ensure_ipc_dir() -> None:
     IPC_DIR.mkdir(parents=True, exist_ok=True)
     if sys.platform != "win32":
@@ -108,6 +113,11 @@ def ensure_ipc_dir() -> None:
 
 def send_command(action: str, params: dict | None = None) -> dict:
     """Send a command to REAPER via file IPC and wait for response."""
+    with _ipc_lock:
+        return _send_command_locked(action, params)
+
+
+def _send_command_locked(action: str, params: dict | None = None) -> dict:
     ensure_ipc_dir()
     cmd_id = str(uuid.uuid4())
     cmd = {"id": cmd_id, "action": action, "params": params or {}}
@@ -426,9 +436,7 @@ def cmd_check():
     # Ping REAPER (quick check)
     print()
     print("  Pinging REAPER...", end="", flush=True)
-    old_timeout = globals()["TIMEOUT"]
-    # Use a short timeout for the ping check
-    response = send_command.__wrapped__(2.0, "ping") if hasattr(send_command, "__wrapped__") else _quick_ping()
+    response = _quick_ping()
     if response.get("success"):
         result = response.get("result", {})
         print(f" Connected!")

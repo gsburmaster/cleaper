@@ -311,8 +311,11 @@ end
 -- Pan: user-facing -100..100 <-> REAPER -1..1
 -- ============================================================================
 
+local MAX_DB = 12 -- +12dB ceiling — prevents extreme gain that could damage speakers/hearing
+
 local function db_to_vol(db)
   if db <= -150 then return 0 end
+  if db > MAX_DB then db = MAX_DB end
   return 10 ^ (db / 20)
 end
 
@@ -492,6 +495,7 @@ end
 function handlers.rename_track(params)
   local track, err = resolve_track(params.track)
   if not track then return nil, err end
+  if not params.new_name or params.new_name == "" then return nil, "New name cannot be empty" end
   reaper.GetSetMediaTrackInfo_String(track, "P_NAME", params.new_name, true)
   return {old_name = params.track, new_name = params.new_name}
 end
@@ -671,8 +675,14 @@ function handlers.set_fx_param(params)
     end
   end
 
-  reaper.TrackFX_SetParam(track, fx_idx, match_idx, params.value)
-  return {track = params.track, fx = params.fx, param = params.param, value = params.value}
+  -- Clamp value to the plugin's declared min/max range
+  local val = params.value
+  local _, minval, maxval = reaper.TrackFX_GetParam(track, fx_idx, match_idx)
+  if minval and maxval and maxval > minval then
+    val = math.max(minval, math.min(maxval, val))
+  end
+  reaper.TrackFX_SetParam(track, fx_idx, match_idx, val)
+  return {track = params.track, fx = params.fx, param = params.param, value = val}
 end
 
 function handlers.bypass_fx(params)
@@ -699,6 +709,7 @@ function handlers.create_send(params)
   if not src then return nil, "Source: " .. err end
   local dest, derr = resolve_track(params.dest)
   if not dest then return nil, "Dest: " .. derr end
+  if src == dest then return nil, "Cannot create a send from a track to itself" end
   local send_idx = reaper.CreateTrackSend(src, dest)
   if params.volume_db then
     local db = tonumber(params.volume_db)
@@ -775,6 +786,7 @@ function handlers.insert_midi_notes(params)
     local sb = tonumber(note.start_beat)
     local lb = tonumber(note.length_beats)
     if not pitch or not sb or not lb then goto continue end
+    if lb <= 0 then goto continue end -- skip zero/negative length notes
     pitch = math.max(0, math.min(127, math.floor(pitch)))
     vel = math.max(1, math.min(127, math.floor(vel)))
     local start_ppq = reaper.MIDI_GetPPQPosFromProjQN(take, sb)
@@ -804,6 +816,7 @@ function handlers.move_item(params)
   if not item then return nil, "Item not found" end
   local pos = tonumber(params.position)
   if not pos then return nil, "Invalid position" end
+  if pos < 0 then return nil, "Position cannot be negative" end
   reaper.SetMediaItemInfo_Value(item, "D_POSITION", pos)
   reaper.UpdateArrange()
   return {track = params.track, item_index = params.item_index, new_position = pos}
@@ -832,6 +845,7 @@ function handlers.add_region(params)
   local s = tonumber(params.start)
   local e = tonumber(params.finish)
   if not s or not e then return nil, "Invalid start/finish values" end
+  if s >= e then return nil, "Region start must be before end" end
   local idx = reaper.AddProjectMarker(0, true, s, e, params.name or "", -1)
   return {index = idx, start = s, finish = e, name = params.name}
 end
@@ -913,9 +927,14 @@ function handlers.render_project(params)
       reaper.GetSetProjectInfo(0, "RENDER_ENDPOS", params.end_time, true)
     end
   end
-  -- Set sample rate if provided
+  -- Set sample rate if provided (validate common rates)
   if params.sample_rate then
-    reaper.GetSetProjectInfo(0, "RENDER_SRATE", params.sample_rate, true)
+    local sr = tonumber(params.sample_rate)
+    local valid_rates = {8000,11025,16000,22050,32000,44100,48000,88200,96000,176400,192000}
+    local is_valid = false
+    for _, r in ipairs(valid_rates) do if sr == r then is_valid = true; break end end
+    if not is_valid then return nil, "Invalid sample rate. Use: 44100, 48000, 88200, 96000, or 192000" end
+    reaper.GetSetProjectInfo(0, "RENDER_SRATE", sr, true)
   end
   -- Set channels if provided (1=mono, 2=stereo)
   if params.channels then
@@ -938,7 +957,8 @@ end
 -- ============================================================================
 
 -- Helper: resolve an envelope on a track by name
-local function resolve_envelope(track, env_name)
+-- create: if true, create FX parameter envelopes that don't exist yet
+local function resolve_envelope(track, env_name, create)
   if not env_name or env_name == "" then return nil, "No envelope name provided" end
   local env_lower = env_name:lower()
 
@@ -961,7 +981,7 @@ local function resolve_envelope(track, env_name)
     for p = 0, count - 1 do
       local _, pname = reaper.TrackFX_GetParamName(track, fx_idx, p)
       if pname:lower() == param_lower or pname:lower():find(param_lower, 1, true) then
-        local env = reaper.GetFXEnvelope(track, fx_idx, p, true) -- true = create if needed
+        local env = reaper.GetFXEnvelope(track, fx_idx, p, create or false)
         if env then return env, nil, fx_part .. ":" .. pname end
         return nil, "Could not create envelope for " .. pname
       end
@@ -978,7 +998,7 @@ end
 function handlers.add_envelope_points(params)
   local track, err = resolve_track(params.track)
   if not track then return nil, err end
-  local env, env_err, env_label = resolve_envelope(track, params.envelope)
+  local env, env_err, env_label = resolve_envelope(track, params.envelope, true)
   if not env then return nil, env_err end
 
   local points = params.points or {}
@@ -1058,57 +1078,55 @@ end
 function handlers.create_folder(params)
   local name = params.name or "Folder"
   local children = params.children or {}
+  if #children == 0 then return nil, "No child tracks specified" end
 
-  -- Resolve all child tracks first
-  local child_tracks = {}
+  -- Resolve all child tracks first, collect their indices
+  local child_entries = {}
   for _, child_name in ipairs(children) do
     local ct, cerr = resolve_track(child_name)
     if not ct then return nil, "Child track: " .. cerr end
-    child_tracks[#child_tracks+1] = {track = ct, name = child_name}
+    local idx = math.floor(reaper.GetMediaTrackInfo_Value(ct, "IP_TRACKNUMBER") - 1)
+    child_entries[#child_entries+1] = {track = ct, name = child_name, idx = idx}
   end
 
-  -- Find the position: insert before the first child, or at end
-  local insert_idx = reaper.CountTracks(0)
-  if #child_tracks > 0 then
-    local first_child_idx = math.huge
-    for _, c in ipairs(child_tracks) do
-      local idx = reaper.GetMediaTrackInfo_Value(c.track, "IP_TRACKNUMBER") - 1
-      if idx < first_child_idx then first_child_idx = idx end
+  -- Sort children by current index so we can check contiguity
+  table.sort(child_entries, function(a, b) return a.idx < b.idx end)
+
+  -- Check that children are contiguous (required for safe folder creation)
+  for i = 2, #child_entries do
+    if child_entries[i].idx ~= child_entries[i-1].idx + 1 then
+      return nil, "Child tracks must be adjacent in the track list for safe folder creation. "
+        .. "'" .. child_entries[i-1].name .. "' (index " .. child_entries[i-1].idx .. ") and '"
+        .. child_entries[i].name .. "' (index " .. child_entries[i].idx .. ") are not adjacent. "
+        .. "Reorder them in REAPER first, or move them next to each other."
     end
-    insert_idx = first_child_idx
   end
 
-  -- Create the folder track
+  -- Check that none of the children are already folder parents (would corrupt hierarchy)
+  for _, c in ipairs(child_entries) do
+    local depth = reaper.GetMediaTrackInfo_Value(c.track, "I_FOLDERDEPTH")
+    if depth == 1 then
+      return nil, "Track '" .. c.name .. "' is already a folder parent. "
+        .. "Cannot nest it inside another folder this way — restructure manually in REAPER."
+    end
+  end
+
+  -- Insert the folder track right before the first child
+  local insert_idx = child_entries[1].idx
   reaper.InsertTrackAtIndex(insert_idx, true)
   local folder_track = reaper.GetTrack(0, insert_idx)
   reaper.GetSetMediaTrackInfo_String(folder_track, "P_NAME", name, true)
-  reaper.SetMediaTrackInfo_Value(folder_track, "I_FOLDERDEPTH", 1) -- make it a folder parent
+  reaper.SetMediaTrackInfo_Value(folder_track, "I_FOLDERDEPTH", 1)
 
-  -- Move children right after the folder track (they may have shifted by 1)
-  -- Re-resolve since indices changed
-  local placed = 0
-  for _, child_name_entry in ipairs(children) do
-    local ct, cerr = resolve_track(child_name_entry)
-    if ct then
-      local cur_idx = math.floor(reaper.GetMediaTrackInfo_Value(ct, "IP_TRACKNUMBER") - 1)
-      local target_idx = insert_idx + 1 + placed
-      if cur_idx ~= target_idx then
-        reaper.ReorderSelectedTracks(target_idx, 0)
-        -- Use SetOnlyTrackSelected + ReorderSelectedTracks
-        reaper.SetOnlyTrackSelected(ct)
-        reaper.ReorderSelectedTracks(target_idx, 0)
-      end
-      -- Set folder depth to 0 (normal child)
+  -- Children shifted by 1 due to the insert. Set their depths.
+  -- All children are now at indices (insert_idx+1) through (insert_idx+#children).
+  for i = 1, #child_entries do
+    local ct = reaper.GetTrack(0, insert_idx + i)
+    if i < #child_entries then
       reaper.SetMediaTrackInfo_Value(ct, "I_FOLDERDEPTH", 0)
-      placed = placed + 1
-    end
-  end
-
-  -- Close the folder: set the last child's depth to -1
-  if #children > 0 then
-    local last_child, _ = resolve_track(children[#children])
-    if last_child then
-      reaper.SetMediaTrackInfo_Value(last_child, "I_FOLDERDEPTH", -1)
+    else
+      -- Last child closes the folder
+      reaper.SetMediaTrackInfo_Value(ct, "I_FOLDERDEPTH", -1)
     end
   end
 
@@ -1170,6 +1188,7 @@ end
 function handlers.set_cursor_position(params)
   local time = tonumber(params.time)
   if not time then return nil, "Invalid time value" end
+  if time < 0 then time = 0 end
   reaper.SetEditCurPos(time, true, false)
   return {cursor_position = time}
 end
@@ -1178,6 +1197,8 @@ function handlers.set_time_selection(params)
   local s = tonumber(params.start_time)
   local e = tonumber(params.end_time)
   if not s or not e then return nil, "Invalid start/end time" end
+  if s < 0 then s = 0 end
+  if e <= s then return nil, "End time must be after start time" end
   reaper.GetSet_LoopTimeRange(true, false, s, e, false)
   return {start_time = s, end_time = e}
 end
@@ -1266,6 +1287,8 @@ local READONLY_ACTIONS = {
   get_envelope_points = true,
   list_installed_fx = true,
   ping = true,
+  undo = true,  -- undo/redo manage their own undo state, don't wrap them
+  redo = true,
 }
 
 local function execute_command(cmd)
