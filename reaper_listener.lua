@@ -703,6 +703,81 @@ function handlers.enable_fx(params)
   return {track = params.track, fx = params.fx, enabled = true}
 end
 
+function handlers.apply_fx_chain(params)
+  local track, err = resolve_track(params.track)
+  if not track then return nil, err end
+  if not params.fx_chain or #params.fx_chain == 0 then
+    return nil, "No fx_chain provided"
+  end
+
+  local results = {}
+  local warnings = {}
+
+  for i, fx_entry in ipairs(params.fx_chain) do
+    local plugin = fx_entry.plugin
+    if not plugin or plugin == "" then
+      warnings[#warnings+1] = "Entry " .. i .. ": no plugin name, skipped"
+    else
+      local fx_idx = reaper.TrackFX_AddByName(track, plugin, false, -1)
+      if fx_idx == -1 then
+        warnings[#warnings+1] = "Plugin '" .. plugin .. "' not found, skipped"
+      else
+        local _, fx_name = reaper.TrackFX_GetFXName(track, fx_idx)
+        local param_results = {}
+
+        if fx_entry.params then
+          local count = reaper.TrackFX_GetNumParams(track, fx_idx)
+          for param_name, param_value in pairs(fx_entry.params) do
+            -- Fuzzy-match parameter name (same logic as set_fx_param)
+            local param_name_lower = tostring(param_name):lower()
+            local match_idx = nil
+            local matches = {}
+            for p = 0, count - 1 do
+              local _, pname = reaper.TrackFX_GetParamName(track, fx_idx, p)
+              if pname:lower() == param_name_lower then
+                match_idx = p; break
+              end
+              if pname:lower():find(param_name_lower, 1, true) then
+                matches[#matches+1] = {index = p, name = pname}
+              end
+            end
+            if not match_idx then
+              if #matches == 1 then
+                match_idx = matches[1].index
+              elseif #matches == 0 then
+                warnings[#warnings+1] = plugin .. ": no param matching '" .. param_name .. "'"
+              else
+                local names = {}
+                for _, m in ipairs(matches) do names[#names+1] = m.name end
+                warnings[#warnings+1] = plugin .. ": ambiguous param '" .. param_name .. "', matches: " .. table.concat(names, ", ")
+              end
+            end
+
+            if match_idx then
+              local val = tonumber(param_value)
+              if val then
+                local _, minval, maxval = reaper.TrackFX_GetParam(track, fx_idx, match_idx)
+                if minval and maxval and maxval > minval then
+                  val = math.max(minval, math.min(maxval, val))
+                end
+                reaper.TrackFX_SetParam(track, fx_idx, match_idx, val)
+                local _, matched_name = reaper.TrackFX_GetParamName(track, fx_idx, match_idx)
+                param_results[#param_results+1] = {param = matched_name, value = val}
+              else
+                warnings[#warnings+1] = plugin .. ": invalid value for '" .. param_name .. "'"
+              end
+            end
+          end
+        end
+
+        results[#results+1] = {plugin = fx_name, fx_index = fx_idx, params_set = param_results}
+      end
+    end
+  end
+
+  return {track = params.track, applied = results, warnings = warnings}
+end
+
 -- Routing
 function handlers.create_send(params)
   local src, err = resolve_track(params.source)

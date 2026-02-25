@@ -562,7 +562,43 @@ def run_server():
                             "- For rendering: render_project uses REAPER's last format settings\n"
                             "- toggle_phase for multi-mic phase issues (kick, snare, DI/amp)\n"
                             "- You can chain multiple operations in sequence\n"
-                            "- If a track name is ambiguous, the error will list the matches — ask the user to clarify"
+                            "- If a track name is ambiguous, the error will list the matches — ask the user to clarify\n\n"
+                            "VIBE-BASED SOUND DESIGN:\n"
+                            "When the user describes sounds with creative/vague terms, translate them into concrete FX.\n"
+                            "- Call get_preferences FIRST to check for user plugin and style preferences\n"
+                            "- Call get_session_state to see existing FX (don't duplicate)\n"
+                            "- Use list_installed_fx to check for preferred or third-party plugins\n"
+                            "- Use apply_fx_chain to apply multiple FX with params in a single call\n"
+                            "- Multiple small moves > one big move (gentle EQ + light compression, not extreme settings)\n"
+                            "- Always explain what you're doing and why\n"
+                            "- When the user says 'I like X for Y' or 'always use X', call set_preference to save it\n\n"
+                            "REAPER BUILT-IN PLUGIN PARAMETER REFERENCE:\n"
+                            "Use these param names directly with apply_fx_chain (no need to call get_fx_params first):\n"
+                            "- ReaEQ: 'Band N Freq', 'Band N Gain', 'Band N BW' (bandwidth), "
+                            "'Band N Type' (0=band, 1=lowshelf, 2=highshelf, 3=highpass, 4=lowpass, 5=notch, "
+                            "6=bandpass, 8=allpass), 'Band N Enabled' (where N = 1-8)\n"
+                            "- ReaComp: 'Thresh' (dB, 0 to -60), 'Ratio', 'Attack' (ms), 'Release' (ms), "
+                            "'Knee', 'Pre-Comp' (lookahead), 'Wet', 'Dry'\n"
+                            "- ReaDelay: 'Length' (ms), 'Feedback', 'Wet', 'Dry', 'Lowpass', 'Highpass'\n"
+                            "- ReaVerbate: 'Room Size', 'Dampening', 'Stereo Width', 'Wet', 'Dry', 'Initial Delay'\n"
+                            "- ReaXcomp: multi-band compressor with per-band thresholds\n"
+                            "- JS: Saturation: 'Drive', 'Output', 'Mix'\n\n"
+                            "COMMON VIBES → FX TRANSLATION:\n"
+                            "- 'warm' → gentle low-shelf boost (+2-3dB ~200-300Hz), slight HF rolloff, light saturation\n"
+                            "- 'bright/airy' → high-shelf boost ~8-12kHz, slight presence boost 3-5kHz\n"
+                            "- 'moist/lush' → chorus or short modulated delay, gentle reverb\n"
+                            "- 'punchy' → compression with fast attack, medium release, moderate ratio\n"
+                            "- 'spacious/wide' → stereo reverb, stereo delay, Haas effect\n"
+                            "- 'crispy/gritty' → saturation/distortion, presence boost\n"
+                            "- 'thick/fat' → low-mid boost, compression, maybe parallel compression\n"
+                            "- 'clean' → remove or reduce existing FX, cut muddy frequencies\n"
+                            "- 'tight' → compression with fast attack, gate for noise, cut low frequencies\n"
+                            "- 'sparkle' → high-frequency shelf boost, exciter/saturation on highs\n"
+                            "- 'muddy (fix)' → cut 200-500Hz, add clarity with high boost\n"
+                            "- 'sit in the mix' → EQ to carve space, compression for dynamics, volume adjustment\n"
+                            "- 'lo-fi' → bit reduction, tape saturation, bandpass filter, vinyl noise\n"
+                            "- 'radio' → bandpass 300Hz-3kHz, light compression, subtle distortion\n"
+                            "These are starting points — adjust based on context, instrument, and user preferences."
                         ),
                     ),
                 )
@@ -873,6 +909,38 @@ def run_server():
                     "fx": {"type": "string", "description": "FX name (partial match OK)"},
                 },
                 "required": ["track", "fx"],
+            },
+        ),
+        Tool(
+            name="apply_fx_chain",
+            description=(
+                "Add multiple FX plugins to a track with pre-configured parameters in a single operation. "
+                "Use this for applying complete effect chains — especially when interpreting creative/vibe-based "
+                "sound descriptions. All FX are added in one undo block (Ctrl+Z reverts everything). "
+                "Parameter names are fuzzy-matched. Values are clamped to plugin ranges."
+            ),
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "track": {"type": "string", "description": "Track name (partial match OK)"},
+                    "fx_chain": {
+                        "type": "array",
+                        "description": "FX plugins to add with parameter settings",
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "plugin": {"type": "string", "description": "Plugin name (e.g., 'ReaEQ')"},
+                                "params": {
+                                    "type": "object",
+                                    "description": "Parameter name → value pairs",
+                                    "additionalProperties": {"type": "number"},
+                                },
+                            },
+                            "required": ["plugin"],
+                        },
+                    },
+                },
+                "required": ["track", "fx_chain"],
             },
         ),
         # Routing
@@ -1314,14 +1382,58 @@ def run_server():
                 "required": ["track"],
             },
         ),
+        # -- User preferences (handled locally, not routed to REAPER) --
+        Tool(
+            name="set_preference",
+            description=(
+                "Save a user mixing preference that persists across sessions. Use for plugin "
+                "preferences (e.g., 'compressor_plugin' → 'FabFilter Pro-C 2'), mixing style notes, or "
+                "custom vibe definitions. Call this when the user expresses a preference."
+            ),
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "key": {
+                        "type": "string",
+                        "description": "Preference key (e.g., 'compressor_plugin', 'style', 'moist_means')",
+                    },
+                    "value": {
+                        "type": "string",
+                        "description": "Preference value",
+                    },
+                },
+                "required": ["key", "value"],
+            },
+        ),
+        Tool(
+            name="get_preferences",
+            description=(
+                "Get all saved user mixing preferences. Call this before interpreting vibe-based "
+                "requests to respect the user's plugin and style preferences."
+            ),
+            inputSchema={"type": "object", "properties": {}},
+        ),
     ]
 
     @server.list_tools()
     async def list_tools() -> list[Tool]:
         return TOOLS
 
+    PREFS_FILE = IPC_DIR / "preferences.json"
+
     @server.call_tool()
     async def call_tool(name: str, arguments: dict) -> list[TextContent]:
+        # Preference tools are handled locally (no REAPER round-trip)
+        if name == "set_preference":
+            prefs = json.loads(PREFS_FILE.read_text()) if PREFS_FILE.exists() else {}
+            prefs[arguments["key"]] = arguments["value"]
+            PREFS_FILE.write_text(json.dumps(prefs, indent=2))
+            return [TextContent(type="text", text=json.dumps({"saved": arguments["key"], "value": arguments["value"]}))]
+
+        if name == "get_preferences":
+            prefs = json.loads(PREFS_FILE.read_text()) if PREFS_FILE.exists() else {}
+            return [TextContent(type="text", text=json.dumps(prefs, indent=2))]
+
         response = await asyncio.to_thread(send_command, name, arguments)
         return make_result(response)
 
