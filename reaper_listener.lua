@@ -249,6 +249,9 @@ end
 
 local function resolve_track(name)
   if not name or name == "" then return nil, "No track name provided" end
+  if name:lower() == "master" then
+    return reaper.GetMasterTrack(0), nil
+  end
   local name_lower = name:lower()
   local matches = {}
   local num_tracks = reaper.CountTracks(0)
@@ -1343,6 +1346,614 @@ function handlers.toggle_phase(params)
   return {track = params.track, phase_inverted = new_phase == 1}
 end
 
+-- ============================================================================
+-- Spectral Analysis (requires MCP Analyzer JSFX)
+-- ============================================================================
+
+local ANALYZER_FX_NAME = "mcp_analyzer"
+
+local function find_or_add_analyzer(track)
+  local count = reaper.TrackFX_GetCount(track)
+  for i = 0, count - 1 do
+    local _, name = reaper.TrackFX_GetFXName(track, i)
+    if name:lower():find("mcp analyzer") or name:lower():find("mcp_analyzer") then
+      return i, nil
+    end
+  end
+  -- Try to add it
+  local idx = reaper.TrackFX_AddByName(track, ANALYZER_FX_NAME, false, -1)
+  if idx < 0 then
+    return nil, "MCP Analyzer JSFX not installed. Run 'python mcp_server.py install' to set it up."
+  end
+  return idx, nil
+end
+
+function handlers.analyze_track(params)
+  local track, err = resolve_track(params.track)
+  if not track then return nil, err end
+
+  local fx_idx, fx_err = find_or_add_analyzer(track)
+  if not fx_idx then return nil, fx_err end
+
+  -- Check playback state
+  local play_state = reaper.GetPlayState()
+  local warning = nil
+  if play_state == 0 then
+    warning = "Playback is stopped — analysis values may be stale. Start playback for live readings."
+  end
+
+  -- Read spectral params (sliders 0-4, but JSFX params are 0-indexed matching slider-1)
+  local sub_db    = reaper.TrackFX_GetParam(track, fx_idx, 0)
+  local low_db    = reaper.TrackFX_GetParam(track, fx_idx, 1)
+  local mid_db    = reaper.TrackFX_GetParam(track, fx_idx, 2)
+  local hmid_db   = reaper.TrackFX_GetParam(track, fx_idx, 3)
+  local high_db   = reaper.TrackFX_GetParam(track, fx_idx, 4)
+
+  -- Read peak/RMS params (sliders 5-9)
+  local peak_l    = reaper.TrackFX_GetParam(track, fx_idx, 5)
+  local peak_r    = reaper.TrackFX_GetParam(track, fx_idx, 6)
+  local rms_l     = reaper.TrackFX_GetParam(track, fx_idx, 7)
+  local rms_r     = reaper.TrackFX_GetParam(track, fx_idx, 8)
+  local crest     = reaper.TrackFX_GetParam(track, fx_idx, 9)
+
+  local result = {
+    track = params.track,
+    spectral = {
+      sub_db = math.floor(sub_db * 10 + 0.5) / 10,
+      low_db = math.floor(low_db * 10 + 0.5) / 10,
+      mid_db = math.floor(mid_db * 10 + 0.5) / 10,
+      high_mid_db = math.floor(hmid_db * 10 + 0.5) / 10,
+      high_db = math.floor(high_db * 10 + 0.5) / 10,
+    },
+    peak = {
+      left_db = math.floor(peak_l * 10 + 0.5) / 10,
+      right_db = math.floor(peak_r * 10 + 0.5) / 10,
+    },
+    rms = {
+      left_db = math.floor(rms_l * 10 + 0.5) / 10,
+      right_db = math.floor(rms_r * 10 + 0.5) / 10,
+    },
+    crest_factor_db = math.floor(crest * 10 + 0.5) / 10,
+  }
+  if warning then result.warning = warning end
+  return result
+end
+
+function handlers.get_loudness(params)
+  local track, err = resolve_track(params.track)
+  if not track then return nil, err end
+
+  local fx_idx, fx_err = find_or_add_analyzer(track)
+  if not fx_idx then return nil, fx_err end
+
+  -- Optional reset
+  if params.reset then
+    reaper.TrackFX_SetParam(track, fx_idx, 13, 1) -- trigger reset
+  end
+
+  -- Read LUFS params (sliders 10-12)
+  local short_lufs  = reaper.TrackFX_GetParam(track, fx_idx, 10)
+  local int_lufs    = reaper.TrackFX_GetParam(track, fx_idx, 11)
+  local kw_rms      = reaper.TrackFX_GetParam(track, fx_idx, 12)
+
+  local play_state = reaper.GetPlayState()
+  local warning = nil
+  if play_state == 0 then
+    warning = "Playback is stopped — LUFS values may be stale."
+  end
+
+  local result = {
+    track = params.track,
+    short_term_lufs = math.floor(short_lufs * 10 + 0.5) / 10,
+    integrated_lufs = math.floor(int_lufs * 10 + 0.5) / 10,
+    k_weighted_rms_db = math.floor(kw_rms * 10 + 0.5) / 10,
+    targets = {
+      spotify = -14,
+      youtube = -14,
+      apple_music = -16,
+      broadcast = -24,
+      cd = -9,
+    },
+  }
+  if warning then result.warning = warning end
+  return result
+end
+
+-- ============================================================================
+-- Mix Audit / Diagnostic
+-- ============================================================================
+
+function handlers.audit_mix(params)
+  local issues = {}
+  local num_tracks = reaper.CountTracks(0)
+  local play_state = reaper.GetPlayState()
+  local playback_active = (play_state & 1) ~= 0
+
+  for i = 0, num_tracks - 1 do
+    local track = reaper.GetTrack(0, i)
+    local _, track_name = reaper.GetTrackName(track)
+    local num_items = reaper.CountTrackMediaItems(track)
+    local num_fx = reaper.TrackFX_GetCount(track)
+    local num_sends = reaper.GetTrackNumSends(track, 0) -- 0 = sends
+    local num_receives = reaper.GetTrackNumSends(track, -1) -- -1 = receives
+    local is_folder = reaper.GetMediaTrackInfo_Value(track, "I_FOLDERDEPTH") > 0
+    local phase = reaper.GetMediaTrackInfo_Value(track, "B_PHASE")
+
+    -- Peak check (requires playback)
+    if playback_active then
+      local peak_l = reaper.Track_GetPeakInfo(track, 0)
+      local peak_r = reaper.Track_GetPeakInfo(track, 1)
+      local peak_max = math.max(peak_l, peak_r)
+      if peak_max >= 1.0 then
+        issues[#issues+1] = {severity = "error", category = "clipping", track = track_name,
+          message = string.format("Track is clipping (peak: %.1f dBFS)", vol_to_db(peak_max))}
+      elseif peak_max > db_to_vol(-6) then
+        issues[#issues+1] = {severity = "warning", category = "hot_track", track = track_name,
+          message = string.format("Track is hot (peak: %.1f dBFS) — risk of clipping downstream", vol_to_db(peak_max))}
+      elseif peak_max < db_to_vol(-40) and num_items > 0 then
+        issues[#issues+1] = {severity = "info", category = "quiet_track", track = track_name,
+          message = string.format("Very quiet track (peak: %.1f dBFS) with items present", vol_to_db(peak_max))}
+      end
+    end
+
+    -- Missing HPF check: look for ReaEQ with highpass band (type=3)
+    local has_hpf = false
+    for j = 0, num_fx - 1 do
+      local _, fx_name = reaper.TrackFX_GetFXName(track, j)
+      local fx_lower = fx_name:lower()
+      if fx_lower:find("hpf") or fx_lower:find("highpass") or fx_lower:find("high pass") then
+        has_hpf = true
+        break
+      end
+      -- Check ReaEQ for highpass band type
+      if fx_lower:find("reaeq") then
+        local num_params = reaper.TrackFX_GetNumParams(track, j)
+        for p = 0, num_params - 1 do
+          local _, pname = reaper.TrackFX_GetParamName(track, j, p)
+          if pname:find("Type") then
+            local val = reaper.TrackFX_GetParam(track, j, p)
+            if math.floor(val + 0.5) == 3 then -- type 3 = highpass
+              has_hpf = true
+              break
+            end
+          end
+        end
+        if has_hpf then break end
+      end
+    end
+    if not has_hpf and num_items > 0 and not is_folder then
+      issues[#issues+1] = {severity = "info", category = "missing_hpf", track = track_name,
+        message = "No high-pass filter detected — consider adding HPF to remove low-frequency rumble"}
+    end
+
+    -- Empty track check
+    if num_items == 0 and num_fx == 0 and num_sends == 0 and num_receives == 0 and not is_folder then
+      issues[#issues+1] = {severity = "info", category = "empty_track", track = track_name,
+        message = "Empty track (no items, FX, sends, or receives)"}
+    end
+
+    -- No FX check
+    if num_items > 0 and num_fx == 0 then
+      issues[#issues+1] = {severity = "info", category = "no_fx", track = track_name,
+        message = "Track has audio items but no FX — intentional?"}
+    end
+
+    -- Phase inverted check
+    if phase == 1 then
+      issues[#issues+1] = {severity = "info", category = "phase_inverted", track = track_name,
+        message = "Phase is inverted — verify this is intentional (multi-mic setup)"}
+    end
+  end
+
+  -- Master track checks
+  if playback_active then
+    local master = reaper.GetMasterTrack(0)
+    local master_peak_l = reaper.Track_GetPeakInfo(master, 0)
+    local master_peak_r = reaper.Track_GetPeakInfo(master, 1)
+    local master_peak = math.max(master_peak_l, master_peak_r)
+    if master_peak >= 1.0 then
+      issues[#issues+1] = {severity = "error", category = "master_clipping", track = "Master",
+        message = string.format("Master bus is clipping (peak: %.1f dBFS)", vol_to_db(master_peak))}
+    elseif master_peak > db_to_vol(-3) then
+      issues[#issues+1] = {severity = "warning", category = "low_headroom", track = "Master",
+        message = string.format("Master bus has low headroom (peak: %.1f dBFS, < 3dB)", vol_to_db(master_peak))}
+    end
+  end
+
+  -- Count by severity
+  local errors, warnings, infos = 0, 0, 0
+  for _, issue in ipairs(issues) do
+    if issue.severity == "error" then errors = errors + 1
+    elseif issue.severity == "warning" then warnings = warnings + 1
+    else infos = infos + 1 end
+  end
+
+  local result = {
+    playback_active = playback_active,
+    summary = {errors = errors, warnings = warnings, info = infos, total_tracks = num_tracks},
+    issues = issues,
+  }
+  if not playback_active then
+    result.warning = "Playback is stopped — clipping and level checks require playback to be running."
+  end
+  return result
+end
+
+-- ============================================================================
+-- Auto Gain Staging
+-- ============================================================================
+
+function handlers.auto_gain_stage(params)
+  local play_state = reaper.GetPlayState()
+  if (play_state & 1) == 0 then
+    return nil, "Playback must be running for gain staging. Start playback on a representative loud section (e.g., chorus), then try again."
+  end
+
+  local target_db = params.target_db or -18
+  local results = {}
+  local tracks_to_process = {}
+
+  if params.track then
+    local track, err = resolve_track(params.track)
+    if not track then return nil, err end
+    tracks_to_process[#tracks_to_process+1] = track
+  else
+    for i = 0, reaper.CountTracks(0) - 1 do
+      tracks_to_process[#tracks_to_process+1] = reaper.GetTrack(0, i)
+    end
+  end
+
+  for _, track in ipairs(tracks_to_process) do
+    local _, track_name = reaper.GetTrackName(track)
+    local is_folder = reaper.GetMediaTrackInfo_Value(track, "I_FOLDERDEPTH") > 0
+
+    -- Skip folders
+    if not is_folder then
+      local peak_l = reaper.Track_GetPeakInfo(track, 0)
+      local peak_r = reaper.Track_GetPeakInfo(track, 1)
+      local peak_max = math.max(peak_l, peak_r)
+
+      -- Skip silent tracks
+      if peak_max > 0.00001 then
+        local current_peak_db = vol_to_db(peak_max)
+        local current_vol = reaper.GetMediaTrackInfo_Value(track, "D_VOL")
+        local current_vol_db = vol_to_db(current_vol)
+        local adjustment = target_db - current_peak_db
+        local new_vol_db = current_vol_db + adjustment
+
+        -- Clamp to safe range
+        new_vol_db = math.max(-80, math.min(MAX_DB, new_vol_db))
+        local new_vol = db_to_vol(new_vol_db)
+
+        reaper.SetMediaTrackInfo_Value(track, "D_VOL", new_vol)
+
+        results[#results+1] = {
+          track = track_name,
+          before_peak_db = math.floor(current_peak_db * 10 + 0.5) / 10,
+          before_vol_db = math.floor(current_vol_db * 10 + 0.5) / 10,
+          adjustment_db = math.floor(adjustment * 10 + 0.5) / 10,
+          new_vol_db = math.floor(new_vol_db * 10 + 0.5) / 10,
+        }
+      end
+    end
+  end
+
+  return {
+    target_db = target_db,
+    tracks_adjusted = #results,
+    results = results,
+  }
+end
+
+-- ============================================================================
+-- Frequency Conflict Detection
+-- ============================================================================
+
+function handlers.detect_frequency_conflicts(params)
+  local num_tracks = reaper.CountTracks(0)
+  local track_boosts = {}  -- {track_name, freq, gain, source}
+  local track_spectral = {} -- {track_name, bands}
+
+  -- Band center frequencies for labeling
+  local band_names = {"sub (20-80Hz)", "low (80-300Hz)", "mid (300Hz-2kHz)", "high-mid (2-8kHz)", "high (8-20kHz)"}
+  local band_freqs = {50, 190, 1150, 5000, 14000}
+
+  for i = 0, num_tracks - 1 do
+    local track = reaper.GetTrack(0, i)
+    local _, track_name = reaper.GetTrackName(track)
+    local num_fx = reaper.TrackFX_GetCount(track)
+
+    -- Mode 1: EQ heuristic — scan EQ plugins for boosting bands
+    for j = 0, num_fx - 1 do
+      local _, fx_name = reaper.TrackFX_GetFXName(track, j)
+      if fx_name:lower():find("reaeq") or fx_name:lower():find("eq") then
+        local num_params = reaper.TrackFX_GetNumParams(track, j)
+        -- Look for bands with gain > 0.5dB
+        for band = 1, 8 do
+          local freq_val, gain_val = nil, nil
+          for p = 0, num_params - 1 do
+            local _, pname = reaper.TrackFX_GetParamName(track, j, p)
+            if pname == "Band " .. band .. " Freq" or pname:find("Band " .. band .. " Freq") then
+              freq_val = reaper.TrackFX_GetParam(track, j, p)
+            end
+            if pname == "Band " .. band .. " Gain" or pname:find("Band " .. band .. " Gain") then
+              gain_val = reaper.TrackFX_GetParam(track, j, p)
+            end
+          end
+          if freq_val and gain_val and gain_val > 0.5 then
+            track_boosts[#track_boosts+1] = {
+              track_name = track_name, freq = freq_val, gain = gain_val, source = "eq_boost"
+            }
+          end
+        end
+      end
+
+      -- Mode 2: Spectral (MCP Analyzer present)
+      if fx_name:lower():find("mcp analyzer") or fx_name:lower():find("mcp_analyzer") then
+        local bands = {}
+        for b = 0, 4 do
+          bands[b+1] = reaper.TrackFX_GetParam(track, j, b)
+        end
+        track_spectral[#track_spectral+1] = {track_name = track_name, bands = bands}
+      end
+    end
+  end
+
+  local conflicts = {}
+
+  -- EQ heuristic conflicts: compare track pairs for boosts within ~1 octave
+  for a = 1, #track_boosts do
+    for b = a + 1, #track_boosts do
+      local ba = track_boosts[a]
+      local bb = track_boosts[b]
+      if ba.track_name ~= bb.track_name then
+        local ratio = ba.freq / bb.freq
+        if ratio > 0.5 and ratio < 2.0 then -- within ~1 octave
+          local avg_freq = (ba.freq + bb.freq) / 2
+          local range = "unknown"
+          if avg_freq < 80 then range = "sub (20-80Hz)"
+          elseif avg_freq < 300 then range = "low (80-300Hz)"
+          elseif avg_freq < 2000 then range = "mid (300Hz-2kHz)"
+          elseif avg_freq < 8000 then range = "high-mid (2-8kHz)"
+          else range = "high (8-20kHz)" end
+
+          conflicts[#conflicts+1] = {
+            track_a = ba.track_name,
+            track_b = bb.track_name,
+            frequency_range = range,
+            approx_freq_hz = math.floor(avg_freq + 0.5),
+            detail = string.format("%s boosts %.0fHz (+%.1fdB), %s boosts %.0fHz (+%.1fdB)",
+              ba.track_name, ba.freq, ba.gain, bb.track_name, bb.freq, bb.gain),
+            suggestion = string.format("Consider cutting %.0fHz on one track and boosting on the other (complementary EQ)", avg_freq),
+          }
+        end
+      end
+    end
+  end
+
+  -- Spectral conflicts: compare tracks with strong energy in same bands
+  for a = 1, #track_spectral do
+    for b = a + 1, #track_spectral do
+      local sa = track_spectral[a]
+      local sb = track_spectral[b]
+      for band_idx = 1, 5 do
+        if sa.bands[band_idx] > -20 and sb.bands[band_idx] > -20 then
+          conflicts[#conflicts+1] = {
+            track_a = sa.track_name,
+            track_b = sb.track_name,
+            frequency_range = band_names[band_idx],
+            approx_freq_hz = band_freqs[band_idx],
+            detail = string.format("Both tracks have strong energy in %s (%s: %.1fdB, %s: %.1fdB)",
+              band_names[band_idx], sa.track_name, sa.bands[band_idx], sb.track_name, sb.bands[band_idx]),
+            suggestion = "Use complementary EQ — cut this range on one track to make space for the other",
+          }
+        end
+      end
+    end
+  end
+
+  return {
+    tracks_analyzed = num_tracks,
+    conflicts_found = #conflicts,
+    conflicts = conflicts,
+  }
+end
+
+-- ============================================================================
+-- Sidechain Routing
+-- ============================================================================
+
+function handlers.setup_sidechain(params)
+  if not params.trigger then return nil, "Missing 'trigger' track parameter" end
+  if not params.target then return nil, "Missing 'target' track parameter" end
+
+  local trigger, err1 = resolve_track(params.trigger)
+  if not trigger then return nil, "Trigger: " .. err1 end
+  local target, err2 = resolve_track(params.target)
+  if not target then return nil, "Target: " .. err2 end
+
+  local effect = params.effect or "compress"
+  local intensity = params.intensity or "moderate"
+
+  -- Intensity presets
+  local presets = {
+    gentle   = {thresh = -20, ratio = 2, attack = 10, release = 100},
+    moderate = {thresh = -15, ratio = 4, attack = 5,  release = 80},
+    heavy    = {thresh = -10, ratio = 8, attack = 1,  release = 50},
+  }
+  local preset = presets[intensity]
+  if not preset then return nil, "Invalid intensity '" .. intensity .. "'. Use gentle, moderate, or heavy." end
+
+  -- Create send from trigger to target
+  local send_idx = reaper.CreateTrackSend(trigger, target)
+  if send_idx < 0 then return nil, "Failed to create send from trigger to target" end
+
+  -- Route send to channels 3/4 (sidechain input)
+  reaper.SetTrackSendInfo_Value(trigger, 0, send_idx, "I_DSTCHAN", 2) -- 2 = channels 3/4
+
+  -- Find or add the appropriate FX on target
+  local fx_plugin = effect == "gate" and "ReaGate" or "ReaComp"
+  local fx_idx = nil
+  local fx_count = reaper.TrackFX_GetCount(target)
+  for i = 0, fx_count - 1 do
+    local _, fx_name = reaper.TrackFX_GetFXName(target, i)
+    if fx_name:lower():find(fx_plugin:lower()) then
+      fx_idx = i
+      break
+    end
+  end
+  if not fx_idx then
+    fx_idx = reaper.TrackFX_AddByName(target, fx_plugin, false, -1)
+    if fx_idx < 0 then return nil, "Failed to add " .. fx_plugin .. " to target track" end
+  end
+
+  -- Set FX parameters using fuzzy matching
+  local function set_param_fuzzy(track, fx, name_pattern, value)
+    local num_params = reaper.TrackFX_GetNumParams(track, fx)
+    for p = 0, num_params - 1 do
+      local _, pname = reaper.TrackFX_GetParamName(track, fx, p)
+      if pname:lower():find(name_pattern:lower()) then
+        reaper.TrackFX_SetParam(track, fx, p, value)
+        return true
+      end
+    end
+    return false
+  end
+
+  -- Apply preset parameters
+  if effect == "gate" then
+    set_param_fuzzy(target, fx_idx, "thresh", preset.thresh)
+    set_param_fuzzy(target, fx_idx, "attack", preset.attack / 1000) -- ms to seconds
+    set_param_fuzzy(target, fx_idx, "release", preset.release / 1000)
+  else
+    -- ReaComp params — thresh is in dB (0 to -60 range mapped to 1.0 to 0.0)
+    local num_params = reaper.TrackFX_GetNumParams(target, fx_idx)
+    for p = 0, num_params - 1 do
+      local _, pname = reaper.TrackFX_GetParamName(target, fx_idx, p)
+      local pname_lower = pname:lower()
+      if pname_lower:find("thresh") then
+        -- ReaComp thresh: normalize from dB range
+        local _, minval, maxval = reaper.TrackFX_GetParam(target, fx_idx, p)
+        local range = maxval - minval
+        local normalized = (preset.thresh - minval) / range
+        normalized = math.max(0, math.min(1, normalized))
+        reaper.TrackFX_SetParam(target, fx_idx, p, normalized)
+      elseif pname_lower:find("ratio") then
+        local _, minval, maxval = reaper.TrackFX_GetParam(target, fx_idx, p)
+        local range = maxval - minval
+        local normalized = (preset.ratio - minval) / range
+        normalized = math.max(0, math.min(1, normalized))
+        reaper.TrackFX_SetParam(target, fx_idx, p, normalized)
+      elseif pname_lower:find("attack") then
+        local _, minval, maxval = reaper.TrackFX_GetParam(target, fx_idx, p)
+        local range = maxval - minval
+        local normalized = (preset.attack / 1000 - minval) / range
+        normalized = math.max(0, math.min(1, normalized))
+        reaper.TrackFX_SetParam(target, fx_idx, p, normalized)
+      elseif pname_lower:find("release") then
+        local _, minval, maxval = reaper.TrackFX_GetParam(target, fx_idx, p)
+        local range = maxval - minval
+        local normalized = (preset.release / 1000 - minval) / range
+        normalized = math.max(0, math.min(1, normalized))
+        reaper.TrackFX_SetParam(target, fx_idx, p, normalized)
+      elseif pname_lower:find("detector") or pname_lower:find("aux") then
+        -- Set to auxiliary/sidechain input
+        reaper.TrackFX_SetParam(target, fx_idx, p, 1)
+      end
+    end
+  end
+
+  return {
+    trigger = params.trigger,
+    target = params.target,
+    effect = fx_plugin,
+    intensity = intensity,
+    send_channel = "3/4 (sidechain)",
+    preset = preset,
+  }
+end
+
+-- ============================================================================
+-- Session Cleanup / Prep
+-- ============================================================================
+
+function handlers.prepare_session(params)
+  local options = params.options or {}
+  local remove_empty = options.remove_empty ~= false  -- default true
+  local create_buses = options.create_buses ~= false   -- default true
+
+  local removed = {}
+  local buses_created = {}
+
+  -- Remove empty tracks (iterate backwards to avoid index shifting)
+  if remove_empty then
+    for i = reaper.CountTracks(0) - 1, 0, -1 do
+      local track = reaper.GetTrack(0, i)
+      local _, track_name = reaper.GetTrackName(track)
+      local num_items = reaper.CountTrackMediaItems(track)
+      local num_fx = reaper.TrackFX_GetCount(track)
+      local num_sends = reaper.GetTrackNumSends(track, 0)
+      local num_receives = reaper.GetTrackNumSends(track, -1)
+      local is_folder = reaper.GetMediaTrackInfo_Value(track, "I_FOLDERDEPTH") > 0
+
+      if num_items == 0 and num_fx == 0 and num_sends == 0 and num_receives == 0 and not is_folder then
+        removed[#removed+1] = track_name
+        reaper.DeleteTrack(track)
+      end
+    end
+  end
+
+  -- Create standard buses if they don't exist
+  if create_buses then
+    local bus_names = {"Drum Bus", "Vocal Bus", "Instrument Bus", "FX Bus"}
+    for _, bus_name in ipairs(bus_names) do
+      -- Check if bus already exists
+      local exists = false
+      for i = 0, reaper.CountTracks(0) - 1 do
+        local track = reaper.GetTrack(0, i)
+        local _, tn = reaper.GetTrackName(track)
+        if tn:lower() == bus_name:lower() then
+          exists = true
+          break
+        end
+      end
+      if not exists then
+        local idx = reaper.CountTracks(0)
+        reaper.InsertTrackAtIndex(idx, true)
+        local track = reaper.GetTrack(0, idx)
+        reaper.GetSetMediaTrackInfo_String(track, "P_NAME", bus_name, true)
+        buses_created[#buses_created+1] = bus_name
+      end
+    end
+  end
+
+  return {
+    tracks_removed = removed,
+    tracks_removed_count = #removed,
+    buses_created = buses_created,
+    buses_created_count = #buses_created,
+    total_tracks = reaper.CountTracks(0),
+  }
+end
+
+function handlers.set_track_color(params)
+  local track, err = resolve_track(params.track)
+  if not track then return nil, err end
+
+  if not params.r or not params.g or not params.b then
+    return nil, "Missing color parameters. Provide r, g, b (0-255 each)."
+  end
+
+  local r = math.max(0, math.min(255, math.floor(params.r)))
+  local g = math.max(0, math.min(255, math.floor(params.g)))
+  local b = math.max(0, math.min(255, math.floor(params.b)))
+
+  local color = reaper.ColorToNative(r, g, b) | 0x1000000
+  reaper.SetMediaTrackInfo_Value(track, "I_CUSTOMCOLOR", color)
+
+  return {track = params.track, r = r, g = g, b = b}
+end
+
 -- Build the allowed actions set from the handlers table
 for action_name, _ in pairs(handlers) do
   ALLOWED_ACTIONS[action_name] = true
@@ -1364,6 +1975,10 @@ local READONLY_ACTIONS = {
   ping = true,
   undo = true,  -- undo/redo manage their own undo state, don't wrap them
   redo = true,
+  analyze_track = true,
+  get_loudness = true,
+  audit_mix = true,
+  detect_frequency_conflicts = true,
 }
 
 local function execute_command(cmd)

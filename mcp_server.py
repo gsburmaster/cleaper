@@ -257,10 +257,11 @@ def cmd_install():
     ensure_ipc_dir()
     print(f"  {IPC_DIR}")
 
-    # 2. Copy Lua script to REAPER's Scripts directory
+    # 2. Copy Lua script and JSFX analyzer to REAPER
     print("[2/4] Setting up REAPER scripts...")
     reaper_path = get_reaper_resource_path()
     lua_src = project_dir / "reaper_listener.lua"
+    jsfx_src = project_dir / "mcp_analyzer.jsfx"
 
     if reaper_path:
         scripts_dir = reaper_path / "Scripts"
@@ -268,9 +269,20 @@ def cmd_install():
         lua_dst = scripts_dir / "reaper_mcp_listener.lua"
         shutil.copy2(lua_src, lua_dst)
         print(f"  Copied to: {lua_dst}")
+
+        # Install JSFX analyzer
+        effects_dir = reaper_path / "Effects"
+        effects_dir.mkdir(parents=True, exist_ok=True)
+        jsfx_dst = effects_dir / "mcp_analyzer.jsfx"
+        if jsfx_src.exists():
+            shutil.copy2(jsfx_src, jsfx_dst)
+            print(f"  Copied to: {jsfx_dst}")
+        else:
+            print(f"  Warning: mcp_analyzer.jsfx not found in project directory")
     else:
         print(f"  REAPER resource directory not found.")
         print(f"  Manually copy reaper_listener.lua to your REAPER Scripts folder.")
+        print(f"  Manually copy mcp_analyzer.jsfx to your REAPER Effects folder.")
 
     # 3. Configure Claude Code
     print("[3/4] Configuring Claude Code...")
@@ -335,7 +347,7 @@ def cmd_uninstall():
     else:
         print(f"  Not found in Claude Desktop config")
 
-    # Remove Lua script from REAPER
+    # Remove Lua script and JSFX from REAPER
     reaper_path = get_reaper_resource_path()
     if reaper_path:
         lua_dst = reaper_path / "Scripts" / "reaper_mcp_listener.lua"
@@ -344,6 +356,10 @@ def cmd_uninstall():
             print(f"  Removed: {lua_dst}")
         else:
             print(f"  Script not found in REAPER Scripts directory")
+        jsfx_dst = reaper_path / "Effects" / "mcp_analyzer.jsfx"
+        if jsfx_dst.exists():
+            jsfx_dst.unlink()
+            print(f"  Removed: {jsfx_dst}")
 
     # Remove IPC directory
     if IPC_DIR.exists():
@@ -397,6 +413,12 @@ def cmd_check():
             print(f"  [OK] Listener script installed in REAPER")
         else:
             print(f"  [MISSING] Listener script not in REAPER Scripts dir")
+            all_ok = False
+        jsfx_dst = reaper_path / "Effects" / "mcp_analyzer.jsfx"
+        if jsfx_dst.exists():
+            print(f"  [OK] MCP Analyzer JSFX installed")
+        else:
+            print(f"  [MISSING] MCP Analyzer JSFX not in REAPER Effects dir")
             all_ok = False
     else:
         print(f"  [MISSING] REAPER resource path not found")
@@ -598,7 +620,39 @@ def run_server():
                             "- 'sit in the mix' → EQ to carve space, compression for dynamics, volume adjustment\n"
                             "- 'lo-fi' → bit reduction, tape saturation, bandpass filter, vinyl noise\n"
                             "- 'radio' → bandpass 300Hz-3kHz, light compression, subtle distortion\n"
-                            "These are starting points — adjust based on context, instrument, and user preferences."
+                            "These are starting points — adjust based on context, instrument, and user preferences.\n\n"
+                            "SPECTRAL ANALYSIS & LUFS METERING:\n"
+                            "- Use analyze_track to get 5-band spectral energy, peak/RMS, and crest factor\n"
+                            "- Use get_loudness for short-term/integrated LUFS and K-weighted RMS\n"
+                            "- Playback MUST be running for live readings — warn the user if stopped\n"
+                            "- The MCP Analyzer JSFX is added automatically (transparent, no audio modification)\n"
+                            "- Use spectral data to make informed EQ decisions rather than guessing\n\n"
+                            "MIX AUDIT:\n"
+                            "- Run audit_mix to diagnose the entire project at once\n"
+                            "- Fix errors first (clipping), then warnings (hot tracks, low headroom), then info\n"
+                            "- Playback should be running for accurate level checks\n\n"
+                            "GAIN STAGING:\n"
+                            "- auto_gain_stage adjusts faders to target -18dBFS (or custom target)\n"
+                            "- Must run during a representative loud section (chorus, drop)\n"
+                            "- Only adjusts faders, not item gain — fully reversible with Ctrl+Z\n\n"
+                            "INSTRUMENT TEMPLATES:\n"
+                            "- get_instrument_templates returns EQ+compression presets for specific instruments\n"
+                            "- Workflow: get_instrument_templates('vocals') → pass fx_chain to apply_fx_chain\n"
+                            "- 16 templates available, all using REAPER built-in plugins\n\n"
+                            "FREQUENCY CONFLICTS:\n"
+                            "- detect_frequency_conflicts finds masking between tracks\n"
+                            "- Suggests complementary EQ carving — cut on one track, boost on the other\n\n"
+                            "SIDECHAIN:\n"
+                            "- setup_sidechain creates routing + configures compressor/gate automatically\n"
+                            "- Common patterns: kick→bass (tight low end), vocal→music bus (ducking), kick→synth pad (pumping)\n\n"
+                            "MASTERING:\n"
+                            "- Use 'master' as the track name to target the master bus with any tool\n"
+                            "- Mastering chain order: EQ → multiband comp → glue comp → limiter\n"
+                            "- LUFS targets: Spotify/YouTube -14, Apple Music -16, broadcast -24, CD -9\n\n"
+                            "SESSION CLEANUP:\n"
+                            "- prepare_session removes empty tracks and creates standard buses\n"
+                            "- set_track_color for visual organization\n"
+                            "- Common color scheme: drums=red, bass=orange, guitars=green, vocals=blue, synths=purple, buses=grey"
                         ),
                     ),
                 )
@@ -1413,6 +1467,205 @@ def run_server():
             ),
             inputSchema={"type": "object", "properties": {}},
         ),
+        # -- Analysis & Metering --
+        Tool(
+            name="analyze_track",
+            description=(
+                "Get spectral analysis of a track — 5-band energy (sub/low/mid/high-mid/high), "
+                "peak levels, RMS levels, and crest factor. Requires playback to be running. "
+                "Automatically adds the MCP Analyzer JSFX if not present (transparent — does not "
+                "modify audio). Use this to diagnose frequency balance, identify problem areas, "
+                "and make informed EQ decisions."
+            ),
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "track": {
+                        "type": "string",
+                        "description": "Track name (or 'master' for master bus)",
+                    },
+                },
+                "required": ["track"],
+            },
+        ),
+        Tool(
+            name="get_loudness",
+            description=(
+                "Get LUFS loudness metering for a track — short-term LUFS (3s window), "
+                "integrated LUFS (since reset), and K-weighted RMS. Returns platform loudness "
+                "targets (Spotify -14, YouTube -14, Apple Music -16, broadcast -24, CD -9). "
+                "Requires playback to be running. Use for loudness matching and mastering."
+            ),
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "track": {
+                        "type": "string",
+                        "description": "Track name (or 'master' for master bus)",
+                    },
+                    "reset": {
+                        "type": "boolean",
+                        "description": "Reset integrated LUFS counter before reading (default false)",
+                    },
+                },
+                "required": ["track"],
+            },
+        ),
+        Tool(
+            name="audit_mix",
+            description=(
+                "Run a comprehensive mix diagnostic. Checks all tracks for: clipping (peak >= 0dBFS), "
+                "hot levels (> -6dB), very quiet tracks, master bus clipping/headroom, missing HPF, "
+                "empty tracks, tracks with no FX, and inverted phase. Returns issues sorted by "
+                "severity (error > warning > info). Playback should be running for level checks."
+            ),
+            inputSchema={"type": "object", "properties": {}},
+        ),
+        Tool(
+            name="auto_gain_stage",
+            description=(
+                "Automatically adjust track faders so all tracks peak near a target level "
+                "(default -18 dBFS). Requires playback to be running during a representative "
+                "loud section (e.g., chorus). Skips folder tracks and silent tracks. "
+                "Wrapped in undo block — Ctrl+Z to revert. Does NOT modify item gain, only faders."
+            ),
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "track": {
+                        "type": "string",
+                        "description": "Specific track name, or omit for all tracks",
+                    },
+                    "target_db": {
+                        "type": "number",
+                        "description": "Target peak level in dBFS (default -18)",
+                    },
+                },
+            },
+        ),
+        Tool(
+            name="get_instrument_templates",
+            description=(
+                "Get instrument-specific FX chain templates using REAPER built-in plugins. "
+                "Returns EQ + compression settings tailored to the instrument. Templates available: "
+                "vocals, kick, snare, hi_hat, overheads, bass_electric, bass_synth, guitar_clean, "
+                "guitar_distorted, acoustic_guitar, piano_keys, synth_pad, synth_lead, strings, "
+                "brass, master. Pass the result's fx_chain directly to apply_fx_chain."
+            ),
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "instrument": {
+                        "type": "string",
+                        "description": (
+                            "Instrument name to get template for (e.g., 'vocals', 'kick'). "
+                            "Omit to list all available templates."
+                        ),
+                    },
+                },
+            },
+        ),
+        Tool(
+            name="detect_frequency_conflicts",
+            description=(
+                "Detect frequency masking conflicts between tracks. Uses two detection modes: "
+                "(1) EQ heuristic — scans EQ plugins for overlapping boosts within ~1 octave, "
+                "(2) Spectral — compares MCP Analyzer energy bands if present. "
+                "Returns conflicting track pairs with frequency ranges and suggestions for "
+                "complementary EQ carving."
+            ),
+            inputSchema={"type": "object", "properties": {}},
+        ),
+        Tool(
+            name="setup_sidechain",
+            description=(
+                "Set up sidechain compression or gating between two tracks. Creates a send from "
+                "trigger to target on channels 3/4 (sidechain input), adds ReaComp/ReaGate, "
+                "and configures preset parameters. Common uses: kick→bass (tighten low end), "
+                "vocal→music (ducking), kick→synth (pumping effect)."
+            ),
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "trigger": {
+                        "type": "string",
+                        "description": "Source/trigger track name (e.g., 'Kick')",
+                    },
+                    "target": {
+                        "type": "string",
+                        "description": "Target track to compress/gate (e.g., 'Bass')",
+                    },
+                    "effect": {
+                        "type": "string",
+                        "enum": ["compress", "gate"],
+                        "description": "Sidechain effect type (default: compress)",
+                    },
+                    "intensity": {
+                        "type": "string",
+                        "enum": ["gentle", "moderate", "heavy"],
+                        "description": "Compression/gate intensity preset (default: moderate)",
+                    },
+                },
+                "required": ["trigger", "target"],
+            },
+        ),
+        Tool(
+            name="prepare_session",
+            description=(
+                "Clean up and prepare a session for mixing. Removes empty tracks (no items, FX, "
+                "sends, or receives — preserves folders). Creates standard bus tracks if missing: "
+                "Drum Bus, Vocal Bus, Instrument Bus, FX Bus. Wrapped in undo block."
+            ),
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "options": {
+                        "type": "object",
+                        "description": "Cleanup options",
+                        "properties": {
+                            "remove_empty": {
+                                "type": "boolean",
+                                "description": "Remove empty tracks (default true)",
+                            },
+                            "create_buses": {
+                                "type": "boolean",
+                                "description": "Create standard bus tracks if missing (default true)",
+                            },
+                        },
+                    },
+                },
+            },
+        ),
+        Tool(
+            name="set_track_color",
+            description=(
+                "Set a track's color in REAPER for visual organization. Common scheme: "
+                "drums=red (255,0,0), bass=orange (255,165,0), guitars=green (0,180,0), "
+                "vocals=blue (0,100,255), synths=purple (150,0,255), buses=grey (128,128,128)."
+            ),
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "track": {
+                        "type": "string",
+                        "description": "Track name",
+                    },
+                    "r": {
+                        "type": "integer",
+                        "description": "Red component (0-255)",
+                    },
+                    "g": {
+                        "type": "integer",
+                        "description": "Green component (0-255)",
+                    },
+                    "b": {
+                        "type": "integer",
+                        "description": "Blue component (0-255)",
+                    },
+                },
+                "required": ["track", "r", "g", "b"],
+            },
+        ),
     ]
 
     @server.list_tools()
@@ -1433,6 +1686,26 @@ def run_server():
         if name == "get_preferences":
             prefs = json.loads(PREFS_FILE.read_text()) if PREFS_FILE.exists() else {}
             return [TextContent(type="text", text=json.dumps(prefs, indent=2))]
+
+        if name == "get_instrument_templates":
+            templates_path = get_project_dir() / "templates.json"
+            if not templates_path.exists():
+                return [TextContent(type="text", text="Error: templates.json not found")]
+            templates = json.loads(templates_path.read_text())
+            instrument = (arguments.get("instrument") or "").strip().lower()
+            if not instrument:
+                # Return all template names and descriptions
+                summary = {k: v["description"] for k, v in templates.items()}
+                return [TextContent(type="text", text=json.dumps(summary, indent=2))]
+            # Fuzzy match: exact first, then partial
+            if instrument in templates:
+                return [TextContent(type="text", text=json.dumps(templates[instrument], indent=2))]
+            matches = [k for k in templates if instrument in k or k in instrument]
+            if len(matches) == 1:
+                return [TextContent(type="text", text=json.dumps(templates[matches[0]], indent=2))]
+            if len(matches) > 1:
+                return [TextContent(type="text", text=f"Ambiguous instrument '{instrument}', matches: {', '.join(matches)}")]
+            return [TextContent(type="text", text=f"No template found for '{instrument}'. Available: {', '.join(templates.keys())}")]
 
         response = await asyncio.to_thread(send_command, name, arguments)
         return make_result(response)

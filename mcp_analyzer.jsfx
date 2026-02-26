@@ -1,0 +1,268 @@
+desc:MCP Analyzer — Spectral + LUFS (transparent passthrough)
+// Transparent audio analyzer for MCP integration.
+// Does NOT modify the audio signal. Computes spectral energy, peak/RMS,
+// crest factor, and LUFS metering. All results exposed as slider parameters
+// readable via TrackFX_GetParam.
+
+slider1:0<-150,0,0.1>Sub Energy dB (20-80Hz)
+slider2:0<-150,0,0.1>Low Energy dB (80-300Hz)
+slider3:0<-150,0,0.1>Mid Energy dB (300Hz-2kHz)
+slider4:0<-150,0,0.1>High-Mid Energy dB (2-8kHz)
+slider5:0<-150,0,0.1>High Energy dB (8-20kHz)
+slider6:0<-150,6,0.1>Peak L dB
+slider7:0<-150,6,0.1>Peak R dB
+slider8:0<-150,6,0.1>RMS L dB
+slider9:0<-150,6,0.1>RMS R dB
+slider10:0<0,40,0.1>Crest Factor dB
+slider11:-70<-70,0,0.1>Short-term LUFS
+slider12:-70<-70,0,0.1>Integrated LUFS
+slider13:-70<-70,0,0.1>K-weighted RMS dB
+slider14:0<0,1,1{Off,Reset}>Reset Integrated
+slider15:0<0,1,1{Stopped,Playing}>Playback State
+
+@init
+
+// ---- Biquad filter memory ----
+// Each biquad needs 5 coefficients (b0,b1,b2,a1,a2) + 4 state vars (x1,x2,y1,y2)
+// We need 4 crossover highpass filters for band-splitting
+
+// Filter coefficient storage: base + 0..4 = b0,b1,b2,a1,a2
+// Filter state storage: base + 0..3 = x1,x2,y1,y2
+
+hp80_coeff  = 0;    // HP @ 80Hz coefficients
+hp300_coeff = 5;    // HP @ 300Hz
+hp2k_coeff  = 10;   // HP @ 2kHz
+hp8k_coeff  = 15;   // HP @ 8kHz
+
+hp80_state  = 20;   // HP @ 80Hz state
+hp300_state = 24;
+hp2k_state  = 28;
+hp8k_state  = 32;
+
+// K-weighting filter storage
+kw_hshelf_coeff = 36;  // High-shelf +4dB @ 1500Hz
+kw_hpf_coeff    = 41;  // HPF @ 38Hz
+kw_hshelf_state = 46;  // State for high-shelf
+kw_hpf_state    = 50;  // State for HPF
+
+// LUFS ring buffer for short-term (3 seconds)
+lufs_ring_base  = 60;
+lufs_ring_size  = 0;   // computed in @init based on srate
+lufs_ring_pos   = 0;
+
+// Compute biquad HP coefficients given freq and srate
+function compute_hp(base, freq) local(w0, alpha, cos_w0, a0)
+(
+  w0 = 2 * $pi * freq / srate;
+  cos_w0 = cos(w0);
+  alpha = sin(w0) / (2 * 0.707); // Q = 0.707 (Butterworth)
+  a0 = 1 + alpha;
+  base[0] = ((1 + cos_w0) / 2) / a0;  // b0
+  base[1] = (-(1 + cos_w0)) / a0;      // b1
+  base[2] = ((1 + cos_w0) / 2) / a0;  // b2
+  base[3] = (-2 * cos_w0) / a0;        // a1
+  base[4] = (1 - alpha) / a0;          // a2
+);
+
+// Compute K-weighting high-shelf: +4dB boost at 1500Hz
+function compute_k_hshelf(base) local(A, w0, alpha, cos_w0, a0, sqA)
+(
+  A = 10^(4/40); // +4dB
+  w0 = 2 * $pi * 1500 / srate;
+  cos_w0 = cos(w0);
+  sqA = sqrt(A);
+  alpha = sin(w0) / (2 * 0.668); // Q ~0.668 from EBU spec approximation
+  a0 = (A+1) - (A-1)*cos_w0 + 2*sqA*alpha;
+  base[0] = (A*((A+1) + (A-1)*cos_w0 + 2*sqA*alpha)) / a0;
+  base[1] = (-2*A*((A-1) + (A+1)*cos_w0)) / a0;
+  base[2] = (A*((A+1) + (A-1)*cos_w0 - 2*sqA*alpha)) / a0;
+  base[3] = (2*((A-1) - (A+1)*cos_w0)) / a0;
+  base[4] = ((A+1) - (A-1)*cos_w0 - 2*sqA*alpha) / a0;
+);
+
+// Clear biquad state
+function clear_state(base)
+(
+  base[0] = 0; base[1] = 0; base[2] = 0; base[3] = 0;
+);
+
+// Apply biquad filter (Direct Form II Transposed)
+function apply_biquad(coeff, state, x) local(y)
+(
+  y = coeff[0]*x + state[0];
+  state[0] = coeff[1]*x - coeff[3]*y + state[1];
+  state[1] = coeff[2]*x - coeff[4]*y;
+  y;
+);
+
+// Initialize crossover filters
+compute_hp(hp80_coeff, 80);
+compute_hp(hp300_coeff, 300);
+compute_hp(hp2k_coeff, 2000);
+compute_hp(hp8k_coeff, 8000);
+
+// Initialize K-weighting filters
+compute_k_hshelf(kw_hshelf_coeff);
+compute_hp(kw_hpf_coeff, 38);
+
+// Clear all filter states
+clear_state(hp80_state);
+clear_state(hp300_state);
+clear_state(hp2k_state);
+clear_state(hp8k_state);
+clear_state(kw_hshelf_state);
+clear_state(kw_hpf_state);
+
+// Per-block accumulators
+sub_acc = 0; low_acc = 0; mid_acc = 0; hmid_acc = 0; high_acc = 0;
+peak_l = 0; peak_r = 0;
+rms_l_acc = 0; rms_r_acc = 0;
+kw_acc = 0;
+block_samples = 0;
+
+// Integrated LUFS
+int_lufs_acc = 0;
+int_lufs_blocks = 0;
+
+// LUFS ring buffer: 3 seconds of per-block power values
+// At typical block sizes (512 samples @ 44100Hz ≈ 86 blocks/sec), 3s ≈ 258 blocks
+// Allocate generously
+lufs_ring_size = ceil(3 * srate / samplesblock);
+lufs_ring_size = max(lufs_ring_size, 100); // minimum safety
+lufs_ring_size = min(lufs_ring_size, 1000); // maximum safety
+lufs_ring_pos = 0;
+lufs_ring_count = 0;
+
+// Zero the ring buffer
+i = 0;
+loop(lufs_ring_size,
+  lufs_ring_base[i] = 0;
+  i += 1;
+);
+
+@sample
+
+// ---- Transparent passthrough (do NOT modify audio) ----
+// spl0 and spl1 pass through unchanged
+
+// ---- Mono sum for spectral band-splitting ----
+mono = (spl0 + spl1) * 0.5;
+
+// Cascaded highpass band-splitting:
+// sub = input - HP@80
+// low = HP@80 - HP@300
+// mid = HP@300 - HP@2k
+// hmid = HP@2k - HP@8k
+// high = HP@8k output
+hp80_out  = apply_biquad(hp80_coeff, hp80_state, mono);
+hp300_out = apply_biquad(hp300_coeff, hp300_state, hp80_out);
+hp2k_out  = apply_biquad(hp2k_coeff, hp2k_state, hp300_out);
+hp8k_out  = apply_biquad(hp8k_coeff, hp8k_state, hp2k_out);
+
+sub_band  = mono - hp80_out;
+low_band  = hp80_out - hp300_out;
+mid_band  = hp300_out - hp2k_out;
+hmid_band = hp2k_out - hp8k_out;
+high_band = hp8k_out;
+
+// Accumulate squared values for RMS per band
+sub_acc  += sub_band * sub_band;
+low_acc  += low_band * low_band;
+mid_acc  += mid_band * mid_band;
+hmid_acc += hmid_band * hmid_band;
+high_acc += high_band * high_band;
+
+// Per-channel peak tracking (absolute value)
+peak_l = max(peak_l, abs(spl0));
+peak_r = max(peak_r, abs(spl1));
+
+// Per-channel RMS accumulation
+rms_l_acc += spl0 * spl0;
+rms_r_acc += spl1 * spl1;
+
+// K-weighting for LUFS: high-shelf then HPF on mono
+kw_sample = apply_biquad(kw_hshelf_coeff, kw_hshelf_state, mono);
+kw_sample = apply_biquad(kw_hpf_coeff, kw_hpf_state, kw_sample);
+kw_acc += kw_sample * kw_sample;
+
+block_samples += 1;
+
+@block
+
+// Avoid division by zero
+block_samples > 0 ? (
+
+  // ---- Spectral band energy (dB) ----
+  slider1 = sub_acc > 0 ? max(-150, 10 * log10(sub_acc / block_samples)) : -150;
+  slider2 = low_acc > 0 ? max(-150, 10 * log10(low_acc / block_samples)) : -150;
+  slider3 = mid_acc > 0 ? max(-150, 10 * log10(mid_acc / block_samples)) : -150;
+  slider4 = hmid_acc > 0 ? max(-150, 10 * log10(hmid_acc / block_samples)) : -150;
+  slider5 = high_acc > 0 ? max(-150, 10 * log10(high_acc / block_samples)) : -150;
+
+  // ---- Peak (dB) ----
+  slider6 = peak_l > 0 ? max(-150, 20 * log10(peak_l)) : -150;
+  slider7 = peak_r > 0 ? max(-150, 20 * log10(peak_r)) : -150;
+
+  // ---- RMS (dB) ----
+  rms_l_val = sqrt(rms_l_acc / block_samples);
+  rms_r_val = sqrt(rms_r_acc / block_samples);
+  slider8 = rms_l_val > 0 ? max(-150, 20 * log10(rms_l_val)) : -150;
+  slider9 = rms_r_val > 0 ? max(-150, 20 * log10(rms_r_val)) : -150;
+
+  // ---- Crest factor (peak-to-RMS ratio in dB) ----
+  rms_avg = sqrt((rms_l_acc + rms_r_acc) / (2 * block_samples));
+  peak_avg = max(peak_l, peak_r);
+  slider10 = rms_avg > 0 ? min(40, 20 * log10(peak_avg / rms_avg)) : 0;
+
+  // ---- K-weighted RMS (dB) ----
+  kw_rms = sqrt(kw_acc / block_samples);
+  slider13 = kw_rms > 0 ? max(-70, 20 * log10(kw_rms)) : -70;
+
+  // ---- Short-term LUFS (3-second sliding window) ----
+  // Store current block's K-weighted mean-square in ring buffer
+  kw_ms = kw_acc / block_samples;
+  lufs_ring_base[lufs_ring_pos] = kw_ms;
+  lufs_ring_pos = (lufs_ring_pos + 1) % lufs_ring_size;
+  lufs_ring_count = min(lufs_ring_count + 1, lufs_ring_size);
+
+  // Compute mean of ring buffer
+  lufs_sum = 0;
+  i = 0;
+  loop(lufs_ring_count,
+    lufs_sum += lufs_ring_base[i];
+    i += 1;
+  );
+  lufs_mean = lufs_sum / lufs_ring_count;
+  slider11 = lufs_mean > 0 ? max(-70, -0.691 + 10 * log10(lufs_mean)) : -70;
+
+  // ---- Integrated LUFS (gated, since reset) ----
+  // Simplified single-pass gating: only include blocks above absolute threshold (-70 LUFS)
+  block_lufs = kw_ms > 0 ? -0.691 + 10 * log10(kw_ms) : -70;
+  block_lufs > -70 ? (
+    int_lufs_acc += kw_ms;
+    int_lufs_blocks += 1;
+  );
+  int_lufs_blocks > 0 ? (
+    int_lufs_mean = int_lufs_acc / int_lufs_blocks;
+    slider12 = int_lufs_mean > 0 ? max(-70, -0.691 + 10 * log10(int_lufs_mean)) : -70;
+  ) : (
+    slider12 = -70;
+  );
+
+  // ---- Reset integrated LUFS on request ----
+  slider14 > 0.5 ? (
+    int_lufs_acc = 0;
+    int_lufs_blocks = 0;
+    slider14 = 0;
+  );
+
+  // ---- Playback state ----
+  slider15 = play_state & 1 ? 1 : 0;
+
+  // ---- Reset per-block accumulators ----
+  sub_acc = 0; low_acc = 0; mid_acc = 0; hmid_acc = 0; high_acc = 0;
+  peak_l = 0; peak_r = 0;
+  rms_l_acc = 0; rms_r_acc = 0;
+  kw_acc = 0;
+  block_samples = 0;
+);

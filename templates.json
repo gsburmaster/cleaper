@@ -1,0 +1,529 @@
+{
+  "vocals": {
+    "description": "Lead/backing vocals — HPF, mud cut, presence, air, compression",
+    "fx_chain": [
+      {
+        "plugin": "ReaEQ",
+        "params": {
+          "Band 1 Type": 3,
+          "Band 1 Freq": 80,
+          "Band 1 Gain": 0,
+          "Band 1 Enabled": 1,
+          "Band 2 Type": 0,
+          "Band 2 Freq": 350,
+          "Band 2 Gain": -3,
+          "Band 2 BW": 1.5,
+          "Band 2 Enabled": 1,
+          "Band 3 Type": 0,
+          "Band 3 Freq": 3000,
+          "Band 3 Gain": 2.5,
+          "Band 3 BW": 1.0,
+          "Band 3 Enabled": 1,
+          "Band 4 Type": 2,
+          "Band 4 Freq": 10000,
+          "Band 4 Gain": 2,
+          "Band 4 Enabled": 1
+        },
+        "notes": "HPF@80Hz, cut mud@350Hz, presence@3kHz, air shelf@10kHz"
+      },
+      {
+        "plugin": "ReaComp",
+        "params": {
+          "Ratio": 3,
+          "Attack": 0.010,
+          "Release": 0.100
+        },
+        "notes": "Moderate compression — ratio 3:1, 10ms attack, 100ms release. Adjust threshold to taste."
+      }
+    ]
+  },
+  "kick": {
+    "description": "Kick drum — HPF, thump, boxiness cut, attack, compression",
+    "fx_chain": [
+      {
+        "plugin": "ReaEQ",
+        "params": {
+          "Band 1 Type": 3,
+          "Band 1 Freq": 30,
+          "Band 1 Gain": 0,
+          "Band 1 Enabled": 1,
+          "Band 2 Type": 0,
+          "Band 2 Freq": 60,
+          "Band 2 Gain": 3,
+          "Band 2 BW": 1.0,
+          "Band 2 Enabled": 1,
+          "Band 3 Type": 0,
+          "Band 3 Freq": 400,
+          "Band 3 Gain": -4,
+          "Band 3 BW": 1.5,
+          "Band 3 Enabled": 1,
+          "Band 4 Type": 0,
+          "Band 4 Freq": 4000,
+          "Band 4 Gain": 3,
+          "Band 4 BW": 1.5,
+          "Band 4 Enabled": 1
+        },
+        "notes": "HPF@30Hz, thump boost@60Hz, cut boxy@400Hz, attack@4kHz"
+      },
+      {
+        "plugin": "ReaComp",
+        "params": {
+          "Ratio": 4,
+          "Attack": 0.005,
+          "Release": 0.080
+        },
+        "notes": "Fast compression — ratio 4:1, 5ms attack, 80ms release"
+      }
+    ]
+  },
+  "snare": {
+    "description": "Snare drum — HPF, body, crack, compression",
+    "fx_chain": [
+      {
+        "plugin": "ReaEQ",
+        "params": {
+          "Band 1 Type": 3,
+          "Band 1 Freq": 100,
+          "Band 1 Gain": 0,
+          "Band 1 Enabled": 1,
+          "Band 2 Type": 0,
+          "Band 2 Freq": 200,
+          "Band 2 Gain": 2,
+          "Band 2 BW": 1.5,
+          "Band 2 Enabled": 1,
+          "Band 3 Type": 0,
+          "Band 3 Freq": 3500,
+          "Band 3 Gain": 3,
+          "Band 3 BW": 1.0,
+          "Band 3 Enabled": 1
+        },
+        "notes": "HPF@100Hz, body@200Hz, crack/snap@3.5kHz"
+      },
+      {
+        "plugin": "ReaComp",
+        "params": {
+          "Ratio": 3,
+          "Attack": 0.008,
+          "Release": 0.080
+        },
+        "notes": "Moderate compression — ratio 3:1, 8ms attack, 80ms release"
+      }
+    ]
+  },
+  "hi_hat": {
+    "description": "Hi-hat / cymbals — HPF, presence, gentle compression",
+    "fx_chain": [
+      {
+        "plugin": "ReaEQ",
+        "params": {
+          "Band 1 Type": 3,
+          "Band 1 Freq": 300,
+          "Band 1 Gain": 0,
+          "Band 1 Enabled": 1,
+          "Band 2 Type": 0,
+          "Band 2 Freq": 7000,
+          "Band 2 Gain": 2,
+          "Band 2 BW": 1.0,
+          "Band 2 Enabled": 1
+        },
+        "notes": "HPF@300Hz to remove bleed, presence boost@7kHz"
+      },
+      {
+        "plugin": "ReaComp",
+        "params": {
+          "Ratio": 2,
+          "Attack": 0.015,
+          "Release": 0.100
+        },
+        "notes": "Gentle compression — ratio 2:1, 15ms attack, 100ms release"
+      }
+    ]
+  },
+  "overheads": {
+    "description": "Drum overheads — HPF, air, light compression",
+    "fx_chain": [
+      {
+        "plugin": "ReaEQ",
+        "params": {
+          "Band 1 Type": 3,
+          "Band 1 Freq": 200,
+          "Band 1 Gain": 0,
+          "Band 1 Enabled": 1,
+          "Band 2 Type": 2,
+          "Band 2 Freq": 12000,
+          "Band 2 Gain": 2,
+          "Band 2 Enabled": 1
+        },
+        "notes": "HPF@200Hz to remove rumble, air shelf@12kHz"
+      },
+      {
+        "plugin": "ReaComp",
+        "params": {
+          "Ratio": 2,
+          "Attack": 0.020,
+          "Release": 0.150
+        },
+        "notes": "Light compression — ratio 2:1, 20ms attack, 150ms release"
+      }
+    ]
+  },
+  "bass_electric": {
+    "description": "Electric bass — HPF, body, mud cut, compression",
+    "fx_chain": [
+      {
+        "plugin": "ReaEQ",
+        "params": {
+          "Band 1 Type": 3,
+          "Band 1 Freq": 40,
+          "Band 1 Gain": 0,
+          "Band 1 Enabled": 1,
+          "Band 2 Type": 0,
+          "Band 2 Freq": 150,
+          "Band 2 Gain": 2,
+          "Band 2 BW": 1.5,
+          "Band 2 Enabled": 1,
+          "Band 3 Type": 0,
+          "Band 3 Freq": 300,
+          "Band 3 Gain": -3,
+          "Band 3 BW": 1.5,
+          "Band 3 Enabled": 1
+        },
+        "notes": "HPF@40Hz, body@150Hz, cut mud@300Hz"
+      },
+      {
+        "plugin": "ReaComp",
+        "params": {
+          "Ratio": 4,
+          "Attack": 0.010,
+          "Release": 0.100
+        },
+        "notes": "Moderate-heavy compression — ratio 4:1, 10ms attack, 100ms release"
+      }
+    ]
+  },
+  "bass_synth": {
+    "description": "Synth bass — HPF, sub boost, controlled mid, compression",
+    "fx_chain": [
+      {
+        "plugin": "ReaEQ",
+        "params": {
+          "Band 1 Type": 3,
+          "Band 1 Freq": 30,
+          "Band 1 Gain": 0,
+          "Band 1 Enabled": 1,
+          "Band 2 Type": 0,
+          "Band 2 Freq": 55,
+          "Band 2 Gain": 3,
+          "Band 2 BW": 1.0,
+          "Band 2 Enabled": 1,
+          "Band 3 Type": 0,
+          "Band 3 Freq": 300,
+          "Band 3 Gain": -2,
+          "Band 3 BW": 1.5,
+          "Band 3 Enabled": 1
+        },
+        "notes": "HPF@30Hz, sub boost@55Hz, cut mud@300Hz"
+      },
+      {
+        "plugin": "ReaComp",
+        "params": {
+          "Ratio": 4,
+          "Attack": 0.005,
+          "Release": 0.080
+        },
+        "notes": "Tight compression — ratio 4:1, 5ms attack, 80ms release"
+      }
+    ]
+  },
+  "guitar_clean": {
+    "description": "Clean electric guitar — HPF, low-mid cut, sparkle, light compression",
+    "fx_chain": [
+      {
+        "plugin": "ReaEQ",
+        "params": {
+          "Band 1 Type": 3,
+          "Band 1 Freq": 100,
+          "Band 1 Gain": 0,
+          "Band 1 Enabled": 1,
+          "Band 2 Type": 0,
+          "Band 2 Freq": 300,
+          "Band 2 Gain": -2,
+          "Band 2 BW": 1.5,
+          "Band 2 Enabled": 1,
+          "Band 3 Type": 0,
+          "Band 3 Freq": 5000,
+          "Band 3 Gain": 2,
+          "Band 3 BW": 1.0,
+          "Band 3 Enabled": 1
+        },
+        "notes": "HPF@100Hz, cut low-mid@300Hz, sparkle@5kHz"
+      },
+      {
+        "plugin": "ReaComp",
+        "params": {
+          "Ratio": 2,
+          "Attack": 0.015,
+          "Release": 0.120
+        },
+        "notes": "Light compression — ratio 2:1, 15ms attack, 120ms release"
+      }
+    ]
+  },
+  "guitar_distorted": {
+    "description": "Distorted electric guitar — HPF, presence, fizz cut",
+    "fx_chain": [
+      {
+        "plugin": "ReaEQ",
+        "params": {
+          "Band 1 Type": 3,
+          "Band 1 Freq": 80,
+          "Band 1 Gain": 0,
+          "Band 1 Enabled": 1,
+          "Band 2 Type": 0,
+          "Band 2 Freq": 4000,
+          "Band 2 Gain": 2,
+          "Band 2 BW": 1.0,
+          "Band 2 Enabled": 1,
+          "Band 3 Type": 2,
+          "Band 3 Freq": 7000,
+          "Band 3 Gain": -3,
+          "Band 3 Enabled": 1
+        },
+        "notes": "HPF@80Hz, presence@4kHz, cut fizz shelf@7kHz+"
+      }
+    ]
+  },
+  "acoustic_guitar": {
+    "description": "Acoustic guitar — HPF, body, shimmer, gentle compression",
+    "fx_chain": [
+      {
+        "plugin": "ReaEQ",
+        "params": {
+          "Band 1 Type": 3,
+          "Band 1 Freq": 80,
+          "Band 1 Gain": 0,
+          "Band 1 Enabled": 1,
+          "Band 2 Type": 0,
+          "Band 2 Freq": 200,
+          "Band 2 Gain": 2,
+          "Band 2 BW": 1.5,
+          "Band 2 Enabled": 1,
+          "Band 3 Type": 2,
+          "Band 3 Freq": 9000,
+          "Band 3 Gain": 2,
+          "Band 3 Enabled": 1
+        },
+        "notes": "HPF@80Hz, body@200Hz, shimmer shelf@9kHz"
+      },
+      {
+        "plugin": "ReaComp",
+        "params": {
+          "Ratio": 2,
+          "Attack": 0.015,
+          "Release": 0.120
+        },
+        "notes": "Gentle compression — ratio 2:1, 15ms attack, 120ms release"
+      }
+    ]
+  },
+  "piano_keys": {
+    "description": "Piano / keyboards — HPF, warmth, clarity, light compression",
+    "fx_chain": [
+      {
+        "plugin": "ReaEQ",
+        "params": {
+          "Band 1 Type": 3,
+          "Band 1 Freq": 60,
+          "Band 1 Gain": 0,
+          "Band 1 Enabled": 1,
+          "Band 2 Type": 0,
+          "Band 2 Freq": 200,
+          "Band 2 Gain": 1.5,
+          "Band 2 BW": 1.5,
+          "Band 2 Enabled": 1,
+          "Band 3 Type": 0,
+          "Band 3 Freq": 3000,
+          "Band 3 Gain": 2,
+          "Band 3 BW": 1.0,
+          "Band 3 Enabled": 1
+        },
+        "notes": "HPF@60Hz, warmth@200Hz, clarity@3kHz"
+      },
+      {
+        "plugin": "ReaComp",
+        "params": {
+          "Ratio": 2,
+          "Attack": 0.020,
+          "Release": 0.150
+        },
+        "notes": "Light compression — ratio 2:1, 20ms attack, 150ms release"
+      }
+    ]
+  },
+  "synth_pad": {
+    "description": "Synth pad — HPF, mud cut, air",
+    "fx_chain": [
+      {
+        "plugin": "ReaEQ",
+        "params": {
+          "Band 1 Type": 3,
+          "Band 1 Freq": 80,
+          "Band 1 Gain": 0,
+          "Band 1 Enabled": 1,
+          "Band 2 Type": 0,
+          "Band 2 Freq": 300,
+          "Band 2 Gain": -2,
+          "Band 2 BW": 1.5,
+          "Band 2 Enabled": 1,
+          "Band 3 Type": 2,
+          "Band 3 Freq": 10000,
+          "Band 3 Gain": 2,
+          "Band 3 Enabled": 1
+        },
+        "notes": "HPF@80Hz, cut mud@300Hz, air shelf@10kHz"
+      }
+    ]
+  },
+  "synth_lead": {
+    "description": "Synth lead — HPF, presence, light saturation",
+    "fx_chain": [
+      {
+        "plugin": "ReaEQ",
+        "params": {
+          "Band 1 Type": 3,
+          "Band 1 Freq": 100,
+          "Band 1 Gain": 0,
+          "Band 1 Enabled": 1,
+          "Band 2 Type": 0,
+          "Band 2 Freq": 3000,
+          "Band 2 Gain": 2,
+          "Band 2 BW": 1.0,
+          "Band 2 Enabled": 1
+        },
+        "notes": "HPF@100Hz, presence@3kHz"
+      },
+      {
+        "plugin": "JS: Saturation",
+        "params": {
+          "Drive": 3,
+          "Mix": 0.3
+        },
+        "notes": "Light saturation for harmonic warmth"
+      }
+    ]
+  },
+  "strings": {
+    "description": "Strings / orchestral — HPF, warmth, air, gentle compression",
+    "fx_chain": [
+      {
+        "plugin": "ReaEQ",
+        "params": {
+          "Band 1 Type": 3,
+          "Band 1 Freq": 60,
+          "Band 1 Gain": 0,
+          "Band 1 Enabled": 1,
+          "Band 2 Type": 0,
+          "Band 2 Freq": 300,
+          "Band 2 Gain": 1.5,
+          "Band 2 BW": 1.5,
+          "Band 2 Enabled": 1,
+          "Band 3 Type": 2,
+          "Band 3 Freq": 8000,
+          "Band 3 Gain": 2,
+          "Band 3 Enabled": 1
+        },
+        "notes": "HPF@60Hz, warmth@300Hz, air shelf@8kHz"
+      },
+      {
+        "plugin": "ReaComp",
+        "params": {
+          "Ratio": 2,
+          "Attack": 0.020,
+          "Release": 0.200
+        },
+        "notes": "Gentle compression — ratio 2:1, 20ms attack, 200ms release"
+      }
+    ]
+  },
+  "brass": {
+    "description": "Brass / horns — HPF, body, honk cut, presence, compression",
+    "fx_chain": [
+      {
+        "plugin": "ReaEQ",
+        "params": {
+          "Band 1 Type": 3,
+          "Band 1 Freq": 100,
+          "Band 1 Gain": 0,
+          "Band 1 Enabled": 1,
+          "Band 2 Type": 0,
+          "Band 2 Freq": 500,
+          "Band 2 Gain": 1.5,
+          "Band 2 BW": 1.5,
+          "Band 2 Enabled": 1,
+          "Band 3 Type": 0,
+          "Band 3 Freq": 1000,
+          "Band 3 Gain": -3,
+          "Band 3 BW": 1.0,
+          "Band 3 Enabled": 1,
+          "Band 4 Type": 0,
+          "Band 4 Freq": 4000,
+          "Band 4 Gain": 2,
+          "Band 4 BW": 1.0,
+          "Band 4 Enabled": 1
+        },
+        "notes": "HPF@100Hz, body@500Hz, cut honk@1kHz, presence@4kHz"
+      },
+      {
+        "plugin": "ReaComp",
+        "params": {
+          "Ratio": 3,
+          "Attack": 0.010,
+          "Release": 0.100
+        },
+        "notes": "Moderate compression — ratio 3:1, 10ms attack, 100ms release"
+      }
+    ]
+  },
+  "master": {
+    "description": "Mastering chain — gentle EQ, multiband compression, glue compression, limiter",
+    "fx_chain": [
+      {
+        "plugin": "ReaEQ",
+        "params": {
+          "Band 1 Type": 3,
+          "Band 1 Freq": 25,
+          "Band 1 Gain": 0,
+          "Band 1 Enabled": 1,
+          "Band 2 Type": 1,
+          "Band 2 Freq": 100,
+          "Band 2 Gain": 1,
+          "Band 2 Enabled": 1,
+          "Band 3 Type": 2,
+          "Band 3 Freq": 10000,
+          "Band 3 Gain": 1,
+          "Band 3 Enabled": 1
+        },
+        "notes": "HPF@25Hz (subsonic), gentle low-shelf@100Hz, gentle air shelf@10kHz"
+      },
+      {
+        "plugin": "ReaXcomp",
+        "params": {},
+        "notes": "Multiband compressor — adjust per-band thresholds to taste"
+      },
+      {
+        "plugin": "ReaComp",
+        "params": {
+          "Ratio": 2,
+          "Attack": 0.020,
+          "Release": 0.150
+        },
+        "notes": "Glue compression — ratio 2:1, 20ms attack, 150ms release. Light gain reduction (2-3dB)."
+      },
+      {
+        "plugin": "ReaLimit",
+        "params": {},
+        "notes": "Limiter — set ceiling to -1dBTP for streaming, -0.3dBTP for CD"
+      }
+    ]
+  }
+}
